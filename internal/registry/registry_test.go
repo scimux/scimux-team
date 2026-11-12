@@ -976,6 +976,104 @@ func TestOpenRefusesBadPaths(t *testing.T) {
 	}
 }
 
+func TestServerNameFollowsTheSeatRule(t *testing.T) {
+	bad := []struct {
+		label string
+		name  string
+	}{
+		{"leading space", " a"},
+		{"trailing space", "a "},
+		{"65 bytes", strings.Repeat("b", 65)},
+		{"newline", "a\nb"},
+		{"escape", "a\x1bb"},
+		{"invalid utf-8", "\xff"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.label, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			_, err := Open(dir, Options{Name: tc.name, Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16))})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Open %v", err)
+			}
+			if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("Open created %s", dir)
+			}
+		})
+	}
+
+	t.Run("existing directory is unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(dir, "marker")
+		if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Open(dir, Options{Name: " a", Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16))})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Open %v", err)
+		}
+		after, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Mode().Perm() != before.Mode().Perm() {
+			t.Fatalf("mode %o", after.Mode().Perm())
+		}
+		body, err := os.ReadFile(marker)
+		if err != nil || string(body) != "keep" {
+			t.Fatalf("marker %q %v", body, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, journalName)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatal("Open wrote a journal")
+		}
+	})
+
+	t.Run("existing journal is unchanged", func(t *testing.T) {
+		dir := writeJournal(t, jl(t, serverMap()))
+		path := filepath.Join(dir, journalName)
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Open(dir, Options{Name: " a", Now: fixed(tsEarly)})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Open %v", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("journal changed %q %v", after, err)
+		}
+	})
+
+	replay := []struct {
+		label string
+		name  string
+	}{
+		{"replay leading space", " a"},
+		{"replay trailing space", "a "},
+		{"replay 65 bytes", strings.Repeat("b", 65)},
+		{"replay newline", "a\nb"},
+		{"replay escape", "a\x1bb"},
+	}
+	for _, tc := range replay {
+		t.Run(tc.label, func(t *testing.T) {
+			rec := serverMap()
+			rec["name"] = tc.name
+			dir := writeJournal(t, jl(t, rec))
+			_, err := Open(dir, Options{Now: fixed(tsEarly), Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16))})
+			if !errors.Is(err, errMalformed) {
+				t.Fatalf("replay %v", err)
+			}
+		})
+	}
+}
+
 func TestMarshalFailureWritesNothing(t *testing.T) {
 	orig := marshalRec
 	t.Cleanup(func() { marshalRec = orig })

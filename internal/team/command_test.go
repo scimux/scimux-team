@@ -140,6 +140,52 @@ func TestURLValidation(t *testing.T) {
 	}
 }
 
+func TestServerNameIsAUsageError(t *testing.T) {
+	restoreSeams(t)
+	bad := []struct {
+		label string
+		name  string
+	}{
+		{"leading space", " a"},
+		{"trailing space", "a "},
+		{"65 bytes", strings.Repeat("n", 65)},
+		{"newline", "a\nb"},
+		{"escape", "a\x1bb"},
+		{"invalid utf-8", "\xff"},
+	}
+	commands := [][]string{
+		{"issue"},
+		{"list"},
+		{"revoke", "x"},
+		{"status"},
+	}
+	for _, tc := range bad {
+		for _, cmd := range commands {
+			t.Run(tc.label+" "+cmd[0], func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "state")
+				args := append([]string{"-state-dir", dir, "-name", tc.name}, cmd...)
+				stdout, _, code, err := runCmd(args...)
+				if code != exitUsage || !errors.Is(err, registry.ErrInvalid) || stdout != "" {
+					t.Fatalf("code=%d err=%v stdout %q", code, err, stdout)
+				}
+				if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("created %s", dir)
+				}
+			})
+		}
+		t.Run(tc.label+" serve", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			stdout, stderr, code, err := runCmd("-state-dir", dir, "-name", tc.name, "-addr", "127.0.0.1:0")
+			if code != exitUsage || !errors.Is(err, registry.ErrInvalid) || stdout != "" || stderr != "" {
+				t.Fatalf("code=%d err=%v stdout %q stderr %q", code, err, stdout, stderr)
+			}
+			if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("created %s", dir)
+			}
+		})
+	}
+}
+
 func TestListHumanJSONAndFilters(t *testing.T) {
 	restoreSeams(t)
 	nowFn = fixedNow
