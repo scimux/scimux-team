@@ -37,7 +37,9 @@ go run ./tools/covercheck
   an exclusive non-blocking flock on `server.lock` in that directory. Operator
   commands do not take that lock.
 - An active seat is one whose join code is redeemed. The limit is 200.
-- A request body is limited to 16 MiB.
+- A request body is limited to 16 MiB. The handler lock covers `Refresh`
+  and the registry calls that follow it in that request. The lock is not
+  held while a body is read or a response is written.
 - The routes are `GET /v1/hello`, `POST /v1/register` and `GET /v1/seats`.
   Every other path, including every path under `/v1/channels`, answers `404`
   with the body `{"error":"not_found"}`.

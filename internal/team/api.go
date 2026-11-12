@@ -99,30 +99,61 @@ func newHTTPServer(h http.Handler) *http.Server {
 	}
 }
 
-// ServeHTTP refreshes the registry, rejects a path that is not already in
-// cleaned form, then dispatches. A cleaned path the mux does not know,
-// including every /v1/channels path, is the constant not_found body.
+// errNotFound and errUnauthorized are handler results. They are not registry
+// failures: finish writes them as the constant protocol bodies.
+var (
+	errNotFound     = errors.New("not found")
+	errUnauthorized = errors.New("unauthorized")
+)
+
+// ServeHTTP rejects a path that is not already in cleaned form, then
+// dispatches. A cleaned path the mux does not know, including every
+// /v1/channels path, is the constant not_found body.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.reg.Refresh(); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal")
-		return
-	}
 	if r.URL.Path != cleanPath(r.URL.Path) {
-		writeError(w, http.StatusNotFound, "not_found")
+		s.notFound(w, r)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *server) hello(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusNotFound, "not_found")
+// withRegistry holds the handler mutex around Refresh and the registry
+// calls that use that refresh. Callers read the body before it and write
+// the response after it returns.
+func (s *server) withRegistry(fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.reg.Refresh(); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func (s *server) finish(w http.ResponseWriter, err error, status int, v any) {
+	if err != nil {
+		switch {
+		case errors.Is(err, errNotFound):
+			writeError(w, http.StatusNotFound, "not_found")
+		case errors.Is(err, errUnauthorized):
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+		default:
+			writeMapped(w, err)
+		}
 		return
 	}
-	srv := s.reg.Server()
-	writeJSON(w, http.StatusOK, helloResp{
+	writeJSON(w, status, v)
+}
+
+func (s *server) hello(w http.ResponseWriter, r *http.Request) {
+	var srv registry.Server
+	err := s.withRegistry(func() error {
+		if r.Method != http.MethodGet {
+			return errNotFound
+		}
+		srv = s.reg.Server()
+		return nil
+	})
+	s.finish(w, err, http.StatusOK, helloResp{
 		Protocol: 1,
 		Server:   serverJSON{ID: srv.ID, Name: srv.Name},
 	})
@@ -133,39 +164,48 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	token, _, err := s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
-	if err != nil {
-		writeMapped(w, err)
-		return
-	}
-	srv := s.reg.Server()
-	writeJSON(w, http.StatusCreated, registerResp{
+	var token string
+	var srv registry.Server
+	err := s.withRegistry(func() error {
+		var regErr error
+		token, _, regErr = s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
+		if regErr != nil {
+			return regErr
+		}
+		srv = s.reg.Server()
+		return nil
+	})
+	s.finish(w, err, http.StatusCreated, registerResp{
 		Token:  token,
 		Server: serverJSON{ID: srv.ID, Name: srv.Name},
 	})
 }
 
 func (s *server) seats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	// Authentication before the body. A bad body on an unauthenticated
-	// request is unauthorized, not bad_request.
-	if _, ok := authenticate(s.reg, r); !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	rows := s.reg.Seats()
+	var rows []registry.Seat
+	err := s.withRegistry(func() error {
+		if r.Method != http.MethodGet {
+			return errNotFound
+		}
+		// Authentication before the body. A bad body on an unauthenticated
+		// request is unauthorized, not bad_request. This handler does not
+		// read the body.
+		if _, ok := authenticate(s.reg, r); !ok {
+			return errUnauthorized
+		}
+		rows = s.reg.Seats()
+		return nil
+	})
 	out := make([]seatJSON, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, seatJSON{ID: row.ID, Name: row.Name})
 	}
-	writeJSON(w, http.StatusOK, seatsResp{Seats: out})
+	s.finish(w, err, http.StatusOK, seatsResp{Seats: out})
 }
 
 func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotFound, "not_found")
+	err := s.withRegistry(func() error { return errNotFound })
+	s.finish(w, err, 0, nil)
 }
 
 func authenticate(reg *registry.Registry, r *http.Request) (registry.Seat, bool) {
