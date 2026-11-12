@@ -12,9 +12,14 @@
 package invite
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // Alphabet is Crockford Base32 without the check symbol. I, L, O and U are
@@ -46,36 +51,112 @@ const (
 	UnusedTTL = 30 * 24 * time.Hour
 )
 
+// Domain-separation prefixes. Verifier and CodeID insert a 0x00 byte
+// between the prefix and the payload; that byte is not part of these strings.
+const (
+	verifierDomain = "scimux-team/join-verifier/v1"
+	codeIDDomain   = "scimux-team/join-id/v1"
+)
+
 // ErrFormat is returned by Parse for input that is not a join code.
 var ErrFormat = errors.New("invalid join code")
 
 // Generate draws EntropyBytes from r, or from crypto/rand when r is nil,
 // and returns the normalised code: uppercase, no separators, length CodeLength.
 func Generate(r io.Reader) (string, error) {
-	return "", nil
+	if r == nil {
+		r = rand.Reader
+	}
+	buf := make([]byte, EntropyBytes)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return "", err
+	}
+	return encode(buf), nil
 }
 
-// Format groups a normalised code by GroupSize. A wrong-length input is
-// returned unchanged.
+// Format inserts hyphens every GroupSize characters. It is defined on
+// already-normalised input only. A string of any other length is returned
+// unchanged.
 func Format(normalized string) string {
-	return ""
+	if len(normalized) != CodeLength {
+		return normalized
+	}
+	var b strings.Builder
+	b.Grow(CodeLength + CodeLength/GroupSize - 1)
+	for i := 0; i < len(normalized); i += GroupSize {
+		if i > 0 {
+			b.WriteByte('-')
+		}
+		b.WriteString(normalized[i : i+GroupSize])
+	}
+	return b.String()
 }
 
-// Parse accepts a join code and returns the normalised form.
+// Parse normalises a join code. It accepts lowercase, hyphens and spaces,
+// and the look-alike letters O, I and L. On success it returns the canonical
+// form, which is what Generate returns and what Verifier hashes.
 func Parse(s string) (string, error) {
-	return "", nil
+	var b strings.Builder
+	b.Grow(CodeLength)
+	for _, r := range s {
+		switch r {
+		case '-', ' ':
+			continue
+		case 'o', 'O':
+			r = '0'
+		case 'i', 'I', 'l', 'L':
+			r = '1'
+		default:
+			r = unicode.ToUpper(r)
+		}
+		if strings.IndexRune(Alphabet, r) < 0 {
+			return "", ErrFormat
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() != CodeLength {
+		return "", ErrFormat
+	}
+	return b.String(), nil
 }
 
-// Verifier is the domain-separated hash of a normalised code.
+// Verifier is SHA-256(verifierDomain || 0x00 || normalised).
 func Verifier(normalized string) []byte {
-	return nil
+	h := sha256.New()
+	h.Write([]byte(verifierDomain))
+	h.Write([]byte{0})
+	h.Write([]byte(normalized))
+	return h.Sum(nil)
 }
 
-// CodeID is the domain-separated identifier of a verifier.
+// CodeID is a stable non-secret identifier derived from the verifier,
+// never from the plaintext. It is 32 lowercase hex characters.
 func CodeID(verifier []byte) string {
-	return ""
+	h := sha256.New()
+	h.Write([]byte(codeIDDomain))
+	h.Write([]byte{0})
+	h.Write(verifier)
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:16])
 }
 
+// encode packs src into Crockford Base32, most significant bits first.
+// EntropyBytes is an exact number of 5-bit characters. A shorter input,
+// which production never draws, keeps the leftover bits as a final character.
 func encode(src []byte) string {
-	return ""
+	var acc uint64
+	var bits uint
+	out := make([]byte, 0, CodeLength)
+	for _, b := range src {
+		acc = (acc << 8) | uint64(b)
+		bits += 8
+		for bits >= 5 {
+			bits -= 5
+			out = append(out, Alphabet[(acc>>bits)&31])
+		}
+	}
+	if bits > 0 {
+		out = append(out, Alphabet[(acc<<(5-bits))&31])
+	}
+	return string(out)
 }
