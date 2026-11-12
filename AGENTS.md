@@ -40,6 +40,12 @@ go run ./tools/covercheck
 - **An installation ID is a public label, not a credential.** Only the token
   issued at registration authenticates a seat. A registered installation ID
   cannot be registered again until the operator revokes it.
+- **Join codes are this server's own.** Only the `issue` command of
+  `scimux-team` creates one. Each code admits one seat, once. Nothing issued
+  by `scimux-rv` or any other service is ever valid here.
+- **Operator commands match `scimux-rv`.** `issue`, `list`, `revoke` and
+  `status`, the `-json` flag, the output shapes and the exit codes follow
+  that tool. An operator who knows one knows the other.
 - **The server keeps no secret it could reuse.** Join codes and tokens are
   stored as hashes only. A lost token is replaced by revoking the seat and
   registering again.

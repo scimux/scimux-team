@@ -20,7 +20,7 @@ It is plain HTTP with JSON bodies. Seats poll; there is no push channel.
 
 - Every path below is under the server's base URL.
 - A request with a body sends one JSON object. Unknown fields, a second JSON
-  value after the object and a body over 4 MiB are rejected.
+  value after the object and a body over 16 MiB are rejected.
 - A response with a body is `application/json` and carries
   `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 - Times are UTC in the form `2026-11-12T09:30:00.000Z`.
@@ -33,11 +33,11 @@ An error response is `{"error":"<code>"}` with one of these codes:
 | --- | --- | --- |
 | 400 | `bad_request` | Malformed body, field, path part or query value |
 | 401 | `unauthorized` | Missing, unknown or revoked token |
-| 403 | `join_refused` | Unknown, expired or revoked join code |
+| 403 | `join_refused` | Unknown, used, expired or revoked join code |
 | 403 | `forbidden` | The caller can see the channel but may not do this |
 | 404 | `not_found` | No such route, or no channel the caller can see |
 | 409 | `already_registered` | The installation ID is registered |
-| 413 | `too_large` | Body over 4 MiB, or an entry body over 1 MiB |
+| 413 | `too_large` | Body over 16 MiB, or an entry body over 4 MiB |
 | 422 | `unknown_member` | A member list names a seat that is not registered |
 | 500 | `internal` | The server could not read or write its state |
 | 507 | `quota` | A seat, channel or log limit is reached |
@@ -49,7 +49,10 @@ answers exactly like a channel that does not exist.
 
 ## 3. Join link
 
-The operator creates a join link:
+The operator issues one join code per seat with the server's own `issue`
+command. No other tool or service can issue a code for this server; a code
+from `scimux-rv` is never valid here. With the server's address it forms a
+join link:
 
 ```
 http://relay.example:8080/join#0123-4567-89AB-CDEF-GHJK-MNPQ
@@ -58,8 +61,11 @@ http://relay.example:8080/join#0123-4567-89AB-CDEF-GHJK-MNPQ
 The part before `/join` is the base URL. The part after `#` is the join
 code: 24 characters of Crockford Base32, shown in groups of four. A reader
 ignores `-` and spaces, accepts lowercase, and maps `O` to `0` and `I` or
-`L` to `1`. A join code can be used by many seats until it expires or is
-revoked.
+`L` to `1`.
+
+A join code admits exactly one seat, once. After a successful registration
+it is used up. An unused code expires 30 days after it was issued, and the
+operator can revoke it earlier.
 
 `GET /join` answers `200` with a fixed plain-text sentence, so a person who
 opens the link in a browser sees what it is. The server never receives the
@@ -90,7 +96,7 @@ Answers `201`:
 
 The token is shown once and cannot be retrieved again. The join code is
 checked first, so `already_registered` is only told to a caller that holds a
-valid join code.
+valid join code. A refused registration does not use up the code.
 
 ## 5. Seats
 
@@ -194,7 +200,7 @@ The two logs of a channel have the same shape:
   mirror a key is unique per channel. In the comments a key is unique per
   author.
 - `body` is any JSON value. The server stores it in compact form and never
-  interprets it. The compact form is at most 1 MiB.
+  interprets it. The compact form is at most 4 MiB.
 
 The server gives each new entry the next sequence number, starting at 1, and
 the current time. An entry whose key is already stored is not stored again;
@@ -228,13 +234,14 @@ Answers `200` with the entries whose sequence number is greater than
 
 `author` is the seat that appended the entry. `last` is the highest
 sequence number in the log. `more` is true when entries after the returned
-ones exist. A response carries at most 4 MiB of bodies, and always at least
-one entry when one exists.
+ones exist. A response carries at most 16 MiB of bodies, and always at
+least one entry when one exists.
 
 ## 8. Revocation
 
-When the operator revokes a seat, its token stops working at once, it
+The operator revokes a seat by revoking the join code it registered with.
+Its token stops working at once, it
 disappears from `GET /v1/seats`, the server removes the channels it owned,
 and the server removes it from every member list. The same installation ID
-can then register again with a valid join code. It starts with no channels
+can then register again with a new join code. It starts with no channels
 and no memberships, so a new holder of the ID inherits nothing.
