@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/scimux/scimux-team/internal/channel"
 	"github.com/scimux/scimux-team/internal/registry"
 )
 
@@ -39,6 +40,15 @@ var (
 	shutdownFn  = func(s *http.Server, ctx context.Context) error { return s.Shutdown(ctx) }
 	flockFn     = syscall.Flock
 	chmodFile   = func(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
+)
+
+// openChannelStore and reconcileStore are the channel store. Tests replace
+// them to fail startup before the listener binds.
+var (
+	openChannelStore = channel.Open
+	reconcileStore   = func(st *channel.Store, active func(string) bool) error {
+		return st.Reconcile(active)
+	}
 )
 
 // afterOpen, when set, runs after an operator command opens the registry

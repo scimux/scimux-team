@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/scimux/scimux-team/internal/channel"
 	"github.com/scimux/scimux-team/internal/registry"
 )
 
@@ -65,17 +66,30 @@ type seatJSON struct {
 // server is the HTTP handler. One mutex serializes registry access so a
 // later stage can add routes and a second store without rewriting this.
 type server struct {
-	reg *registry.Registry
-	mu  sync.Mutex
-	mux *http.ServeMux
+	reg      *registry.Registry
+	channels *channel.Store
+	mu       sync.Mutex
+	mux      *http.ServeMux
 }
 
-func newHandler(reg *registry.Registry) http.Handler {
+// beforeRegister, when set, runs after Refresh and before Register.
+// Production leaves it nil. A test uses it to revoke a seat in that window.
+var beforeRegister func()
+
+func newHandler(reg *registry.Registry) *server {
 	s := &server{reg: reg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/hello", s.hello)
 	mux.HandleFunc("POST /v1/register", s.register)
 	mux.HandleFunc("GET /v1/seats", s.seats)
+	mux.HandleFunc("GET /v1/channels", s.listChannels)
+	mux.HandleFunc("PUT /v1/channels/{owner}/{chat}", s.putChannel)
+	mux.HandleFunc("DELETE /v1/channels/{owner}/{chat}", s.deleteChannel)
+	mux.HandleFunc("PUT /v1/channels/{owner}/{chat}/members", s.putMembers)
+	mux.HandleFunc("GET /v1/channels/{owner}/{chat}/mirror", s.getMirror)
+	mux.HandleFunc("POST /v1/channels/{owner}/{chat}/mirror", s.postMirror)
+	mux.HandleFunc("GET /v1/channels/{owner}/{chat}/comments", s.getComments)
+	mux.HandleFunc("POST /v1/channels/{owner}/{chat}/comments", s.postComments)
 	mux.HandleFunc("/", s.notFound)
 	s.mux = mux
 	return s

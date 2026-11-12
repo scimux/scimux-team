@@ -219,11 +219,11 @@ func TestConstantNotFound(t *testing.T) {
 		{http.MethodPost, "/v1/seats"},
 		{http.MethodHead, "/v1/hello"},
 		{http.MethodHead, "/v1/seats"},
-		{http.MethodGet, "/v1/channels"},
+		// GET /v1/channels, PUT /v1/channels/{owner}/{chat} and POST on a log
+		// are routes. What remains here is still not a route: the trailing
+		// slash, a bare channel path, and a method the log does not register.
 		{http.MethodGet, "/v1/channels/"},
 		{http.MethodGet, "/v1/channels/abc/def"},
-		{http.MethodPost, "/v1/channels/abc/def/mirror"},
-		{http.MethodPut, "/v1/channels/abc/def"},
 		{http.MethodDelete, "/v1/channels/abc/def/comments"},
 		{http.MethodGet, "/"},
 		{http.MethodOptions, "/v1/hello"},
