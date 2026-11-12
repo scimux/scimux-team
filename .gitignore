@@ -1,0 +1,23 @@
+# The built binary, anchored to the repository root so that the directory
+# cmd/scimux-team/ is not ignored.
+/scimux-team
+/scimux-team-*
+builds/
+state/
+
+# Markdown is deny-by-default. Every tracked document is listed here, and
+# `git ls-files '*.md'` is the check. Do not list a file that does not exist.
+*.md
+!README.md
+!AGENTS.md
+!CLAUDE.md
+!docs/protocol/team-v1.md
+
+# Untracked scratch: plans, reviews and private tools. Never a build, test
+# or CI dependency.
+attic/
+
+.agent
+.agents
+.codex
+.claude
