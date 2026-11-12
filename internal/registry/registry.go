@@ -117,10 +117,8 @@ var (
 	errStateDir    = errors.New("registry: empty state directory")
 )
 
-// chmodPath and marshalRec are the filesystem and encoding seams. Tests
-// replace them to force failures a valid record and a writable directory
-// will not produce.
-var chmodPath = os.Chmod
+// marshalRec is the encoding seam. Tests replace it to force a failure a
+// valid record will not produce.
 var marshalRec = json.Marshal
 
 // Registry is the server's view of one state directory.
@@ -171,10 +169,13 @@ type record struct {
 	TokenSHA string `json:"token_sha256,omitempty"`
 }
 
-// Open creates the state directory with mode 0700 and opens registry.jsonl.
-// A non-empty Name that breaks the seat-name rule is ErrInvalid and changes
-// nothing. An empty journal receives one server record, under the journal's
-// exclusive lock, so two processes that start together agree on one ID.
+// Open creates a missing state directory with mode 0700, including parents,
+// and opens registry.jsonl. An existing path is used only when Lstat shows
+// a directory whose permission bits are already 0700; Open does not change
+// it. A non-empty Name that breaks the seat-name rule is ErrInvalid and
+// changes nothing. An empty journal receives one server record, under the
+// journal's exclusive lock, so two processes that start together agree on
+// one ID.
 func Open(stateDir string, opts Options) (*Registry, error) {
 	if stateDir == "" {
 		return nil, errStateDir
@@ -201,11 +202,15 @@ func Open(stateDir string, opts Options) (*Registry, error) {
 	if entropy == nil {
 		entropy = rand.Reader
 	}
-	if err := os.MkdirAll(stateDir, dirPerm); err != nil {
+	info, err := ensureStateDir(stateDir)
+	if err != nil {
 		return nil, err
 	}
-	if err := chmodPath(stateDir, dirPerm); err != nil {
-		return nil, err
+	if !info.IsDir() {
+		return nil, errors.New("state directory: not a directory")
+	}
+	if perm := info.Mode().Perm(); perm != dirPerm {
+		return nil, fmt.Errorf("state directory: mode %04o, want %04o", perm, dirPerm)
 	}
 	path := filepath.Join(stateDir, journalName)
 	j, err := journal.Open(path)
@@ -243,6 +248,19 @@ func Open(stateDir string, opts Options) (*Registry, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// ensureStateDir reports the path as it is, or creates it mode 0700 when
+// it is missing. It does not change an existing path.
+func ensureStateDir(path string) (os.FileInfo, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		err = os.MkdirAll(path, dirPerm)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return os.Lstat(path)
 }
 
 // Close releases the journal. A second call is a no-op. Reads of state

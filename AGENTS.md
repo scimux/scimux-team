@@ -32,9 +32,12 @@ go run ./tools/covercheck
 
 ## This stage
 
-- The state directory is `-state-dir`, default `$HOME/.scimux-team`, mode
-  `0700`. `registry.jsonl` is mode `0600`. While a server is running it holds
-  an exclusive non-blocking flock on `server.lock` in that directory. Operator
+- The state directory is `-state-dir`, default `$HOME/.scimux-team`. A
+  missing directory is created mode `0700`, parents included. An existing
+  directory is used only when its permission bits are already `0700`; its
+  mode is not changed. `registry.jsonl` is mode `0600`. While a server is
+  running it holds an exclusive non-blocking flock on `server.lock` in that
+  directory. Operator
   commands do not take that lock.
 - An active seat is one whose join code is redeemed. The limit is 200.
 - `-name` follows the seat-name rule: 1 to 64 bytes of UTF-8, no control

@@ -39,6 +39,10 @@ scimux-team -state-dir ~/.scimux-team -json list
 `issue` prints the plaintext code once on stdout and the non-secret id on
 stderr. With `-url` it prints the join link `URL/join#CODE` instead. The
 server stores only a verifier. `-state-dir` defaults to `$HOME/.scimux-team`.
+A missing state directory is created mode `0700`, including parents. An
+existing directory is used only when its permission bits are already `0700`;
+the tools do not change its mode.
+
 `-name` is the server name recorded on the first start. It follows the
 seat-name rule: 1 to 64 bytes of UTF-8, no control character, and no
 leading or trailing space. The default is `scimux team`. A name that
