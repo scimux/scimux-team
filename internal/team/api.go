@@ -2,12 +2,19 @@ package team
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
+	"log"
 	"net/http"
+	"path"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/scimux/scimux-team/internal/registry"
 )
 
+// Limits are fixed. Stage A has no flags for them.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
@@ -21,12 +28,13 @@ const (
 	revokeNote    = "the seat's token stops working and its channels and memberships are removed"
 )
 
+// marshalJSON is json.Marshal. Tests replace it to force a response that
+// cannot be encoded; a valid response value never makes Marshal fail.
 var marshalJSON = json.Marshal
 
-type registerReq struct {
-	JoinCode       string `json:"join_code"`
-	InstallationID string `json:"installation_id"`
-	Name           string `json:"name"`
+type helloResp struct {
+	Protocol int        `json:"protocol"`
+	Server   serverJSON `json:"server"`
 }
 
 type serverJSON struct {
@@ -34,17 +42,217 @@ type serverJSON struct {
 	Name string `json:"name"`
 }
 
+type registerReq struct {
+	JoinCode       string `json:"join_code"`
+	InstallationID string `json:"installation_id"`
+	Name           string `json:"name"`
+}
+
 type registerResp struct {
 	Token  string     `json:"token"`
 	Server serverJSON `json:"server"`
 }
 
+type seatsResp struct {
+	Seats []seatJSON `json:"seats"`
+}
+
+type seatJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// server is the HTTP handler. One mutex serializes registry access so a
+// later stage can add routes and a second store without rewriting this.
+type server struct {
+	reg *registry.Registry
+	mu  sync.Mutex
+	mux *http.ServeMux
+}
+
 func newHandler(reg *registry.Registry) http.Handler {
-	return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	s := &server{reg: reg}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/hello", s.hello)
+	mux.HandleFunc("POST /v1/register", s.register)
+	mux.HandleFunc("GET /v1/seats", s.seats)
+	mux.HandleFunc("/", s.notFound)
+	s.mux = mux
+	return s
 }
 
 func newHTTPServer(h http.Handler) *http.Server {
-	return &http.Server{}
+	var protos http.Protocols
+	protos.SetHTTP1(true)
+	protos.SetHTTP2(false)
+	protos.SetUnencryptedHTTP2(false)
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+		Protocols:         &protos,
+		// Discard: a nil ErrorLog writes request data to the standard logger.
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
 }
 
-func cleanPath(p string) string { return "" }
+// ServeHTTP refreshes the registry, rejects a path that is not already in
+// cleaned form, then dispatches. A cleaned path the mux does not know,
+// including every /v1/channels path, is the constant not_found body.
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.reg.Refresh(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if r.URL.Path != cleanPath(r.URL.Path) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *server) hello(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	srv := s.reg.Server()
+	writeJSON(w, http.StatusOK, helloResp{
+		Protocol: 1,
+		Server:   serverJSON{ID: srv.ID, Name: srv.Name},
+	})
+}
+
+func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	var req registerReq
+	if !readJSON(w, r, &req) {
+		return
+	}
+	token, _, err := s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
+	if err != nil {
+		writeMapped(w, err)
+		return
+	}
+	srv := s.reg.Server()
+	writeJSON(w, http.StatusCreated, registerResp{
+		Token:  token,
+		Server: serverJSON{ID: srv.ID, Name: srv.Name},
+	})
+}
+
+func (s *server) seats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	// Authentication before the body. A bad body on an unauthenticated
+	// request is unauthorized, not bad_request.
+	if _, ok := authenticate(s.reg, r); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	rows := s.reg.Seats()
+	out := make([]seatJSON, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, seatJSON{ID: row.ID, Name: row.Name})
+	}
+	writeJSON(w, http.StatusOK, seatsResp{Seats: out})
+}
+
+func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotFound, "not_found")
+}
+
+func authenticate(reg *registry.Registry, r *http.Request) (registry.Seat, bool) {
+	const prefix = "Bearer "
+	value := r.Header.Get("Authorization")
+	if !strings.HasPrefix(value, prefix) {
+		return registry.Seat{}, false
+	}
+	return reg.Authenticate(value[len(prefix):])
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "too_large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return false
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return false
+	}
+	return true
+}
+
+func writeMapped(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, registry.ErrJoinRefused):
+		writeError(w, http.StatusForbidden, "join_refused")
+	case errors.Is(err, registry.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "bad_request")
+	case errors.Is(err, registry.ErrAlreadyRegistered):
+		writeError(w, http.StatusConflict, "already_registered")
+	case errors.Is(err, registry.ErrFull):
+		writeError(w, http.StatusInsufficientStorage, "quota")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal")
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := marshalJSON(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeHeaders(w)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+func writeError(w http.ResponseWriter, status int, code string) {
+	writeHeaders(w)
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
+}
+
+func writeHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
+// cleanPath matches net/http.ServeMux's unexported cleanPath so the wrapper
+// intercepts exactly the requests the mux would redirect.
+func cleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	np := path.Clean(p)
+	if p[len(p)-1] == '/' && np != "/" {
+		if len(p) == len(np)+1 && strings.HasPrefix(p, np) {
+			np = p
+		} else {
+			np += "/"
+		}
+	}
+	return np
+}
