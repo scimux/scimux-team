@@ -37,6 +37,10 @@ go run ./tools/covercheck
   an exclusive non-blocking flock on `server.lock` in that directory. Operator
   commands do not take that lock.
 - An active seat is one whose join code is redeemed. The limit is 200.
+- `-name` follows the seat-name rule: 1 to 64 bytes of UTF-8, no control
+  character, and no leading or trailing space. The default is `scimux team`.
+  A name that breaks the rule is a usage error and the state directory is
+  left untouched.
 - A request body is limited to 16 MiB. The handler lock covers `Refresh`
   and the registry calls that follow it in that request. The lock is not
   held while a body is read or a response is written.

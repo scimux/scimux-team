@@ -39,8 +39,11 @@ scimux-team -state-dir ~/.scimux-team -json list
 `issue` prints the plaintext code once on stdout and the non-secret id on
 stderr. With `-url` it prints the join link `URL/join#CODE` instead. The
 server stores only a verifier. `-state-dir` defaults to `$HOME/.scimux-team`.
-`-name` is the server name recorded on the first start; the default is
-`scimux team`.
+`-name` is the server name recorded on the first start. It follows the
+seat-name rule: 1 to 64 bytes of UTF-8, no control character, and no
+leading or trailing space. The default is `scimux team`. A name that
+breaks the rule is a usage error and the state directory is left
+untouched.
 
 The listener binds loopback by default. Plain HTTP is for a trusted network
 or a TLS proxy in front. The server does not terminate TLS. Only one server

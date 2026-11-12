@@ -161,9 +161,9 @@ func admin(args []string, stateFlag, name, baseURL string, jsonOut bool, stdout,
 	if err != nil {
 		return err
 	}
-	reg, err := registry.Open(dir, registry.Options{Name: name, Now: nowFn, Entropy: entropy})
+	reg, err := openState(dir, name)
 	if err != nil {
-		return ioErr(err)
+		return err
 	}
 	defer reg.Close()
 	if afterOpen != nil {
@@ -328,9 +328,9 @@ func serve(parent context.Context, addr, stateFlag, name string, stdout, stderr 
 	if needsPublicWarning(addr) {
 		fmt.Fprintln(stderr, publicWarning)
 	}
-	reg, err := registry.Open(dir, registry.Options{Name: name, Now: nowFn, Entropy: entropy})
+	reg, err := openState(dir, name)
 	if err != nil {
-		return ioErr(err)
+		return err
 	}
 	defer reg.Close()
 	lock, err := lockServer(dir)
@@ -392,6 +392,20 @@ func lockServer(dir string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// openState reports a server name the protocol rejects as a usage error.
+// Every other Open failure is an I/O error. Register's ErrInvalid is not
+// mapped here.
+func openState(dir, name string) (*registry.Registry, error) {
+	reg, err := registry.Open(dir, registry.Options{Name: name, Now: nowFn, Entropy: entropy})
+	if errors.Is(err, registry.ErrInvalid) {
+		return nil, usageErr(err)
+	}
+	if err != nil {
+		return nil, ioErr(err)
+	}
+	return reg, nil
 }
 
 func resolveState(flagValue string) (string, error) {

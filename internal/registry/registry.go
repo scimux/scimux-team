@@ -94,7 +94,7 @@ var (
 	// ErrFull means the active-seat limit is reached.
 	ErrFull = errors.New("seat limit reached")
 
-	// ErrInvalid is an installation ID or a seat name the protocol rejects.
+	// ErrInvalid is a name or an installation ID the protocol rejects.
 	ErrInvalid = errors.New("invalid registration")
 
 	// ErrUnknown is a revoke key that names neither a code nor an active seat.
@@ -172,14 +172,18 @@ type record struct {
 }
 
 // Open creates the state directory with mode 0700 and opens registry.jsonl.
-// An empty journal receives one server record, under the journal's exclusive
-// lock, so two processes that start together agree on one ID.
+// A non-empty Name that breaks the seat-name rule is ErrInvalid and changes
+// nothing. An empty journal receives one server record, under the journal's
+// exclusive lock, so two processes that start together agree on one ID.
 func Open(stateDir string, opts Options) (*Registry, error) {
 	if stateDir == "" {
 		return nil, errStateDir
 	}
 	if opts.MaxSeats < 0 {
 		return nil, errNegative
+	}
+	if opts.Name != "" && !validName(opts.Name) {
+		return nil, ErrInvalid
 	}
 	maxSeats := opts.MaxSeats
 	if maxSeats == 0 {
@@ -527,7 +531,7 @@ func (r *Registry) apply(_ int64, line []byte) error {
 }
 
 func (r *Registry) applyServer(rec record) error {
-	if !goodHex(rec.ID, 16) || rec.Name == "" || rec.Verifier != "" || rec.Expires != "" || rec.Seat != "" || rec.TokenSHA != "" {
+	if !goodHex(rec.ID, 16) || !validName(rec.Name) || rec.Verifier != "" || rec.Expires != "" || rec.Seat != "" || rec.TokenSHA != "" {
 		return errMalformed
 	}
 	if r.serverID != "" {
