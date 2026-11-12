@@ -119,31 +119,47 @@ func TestURLValidation(t *testing.T) {
 		"http://relay.example/",
 		"http://",
 		"http://[::1",
+		"http://u:p@h",
+		"http://h#",
+		"http://h?",
+		"http://h:99999",
+		"HTTP://relay.example",
+		"http://user:pass@relay.example:8080",
+		"http://relay.example:0",
+		"http://relay.example:",
 	}
 	for _, raw := range bad {
-		dir := filepath.Join(t.TempDir(), "state")
-		stdout, stderr, code, err := runCmd("-state-dir", dir, "-url", raw, "issue")
-		if code != exitUsage || err == nil || err.Error() != "-url must be an http or https URL with a host and no path, query or fragment" || stdout != "" {
-			t.Fatalf("url %q code=%d err=%v stderr %q stdout %q", raw, code, err, stderr, stdout)
-		}
-		if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("url %q created %s", raw, dir)
-		}
+		t.Run(raw, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			stdout, stderr, code, err := runCmd("-state-dir", dir, "-url", raw, "issue")
+			if code != exitUsage || err == nil || err.Error() != "-url must be an http or https URL with a host and no path, query or fragment" || stdout != "" {
+				t.Fatalf("code=%d err=%v stderr %q stdout %q", code, err, stderr, stdout)
+			}
+			if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("created %s", dir)
+			}
+		})
 	}
 	good := []string{
 		"https://relay.example",
-		"http://user:pass@relay.example:8080",
-		"HTTP://relay.example",
+		"http://relay.example",
+		"http://relay.example:8080",
+		"http://127.0.0.1",
+		"http://127.0.0.1:8080",
+		"http://[::1]",
+		"http://[::1]:8080",
 	}
 	for i, raw := range good {
-		dir := t.TempDir()
-		fill := byte(0x40 + i)
-		entropy = cat(rep(0x05, 16), rep(fill, invite.EntropyBytes))
-		stdout, stderr, code, err := runCmd("-state-dir", dir, "-url", raw, "issue")
-		wantCode := codeFrom(t, rep(fill, invite.EntropyBytes))
-		if err != nil || code != exitOK || stdout != raw+"/join#"+wantCode+"\n" || !strings.HasPrefix(stderr, "id: ") {
-			t.Fatalf("url %q code=%d err=%v\nstdout %q\nstderr %q", raw, code, err, stdout, stderr)
-		}
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			fill := byte(0x40 + i)
+			entropy = cat(rep(0x05, 16), rep(fill, invite.EntropyBytes))
+			stdout, stderr, code, err := runCmd("-state-dir", dir, "-url", raw, "issue")
+			wantCode := codeFrom(t, rep(fill, invite.EntropyBytes))
+			if err != nil || code != exitOK || stdout != raw+"/join#"+wantCode+"\n" || !strings.HasPrefix(stderr, "id: ") {
+				t.Fatalf("code=%d err=%v\nstdout %q\nstderr %q", code, err, stdout, stderr)
+			}
+		})
 	}
 }
 
