@@ -365,16 +365,31 @@ func serve(parent context.Context, addr, stateFlag, name string, stdout, stderr 
 		return err
 	}
 	defer reg.Close()
+	ch, err := openChannelStore(dir, channel.Options{Now: nowFn, Entropy: entropy})
+	if err != nil {
+		return ioErr(err)
+	}
+	defer ch.Close()
 	lock, err := lockServer(dir)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	// Revokes that landed while this process was stopped are applied before
+	// the listener accepts a request.
+	if err := reconcileStore(ch, func(id string) bool {
+		_, ok := reg.Seat(id)
+		return ok
+	}); err != nil {
+		return ioErr(err)
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	srv := newHTTPServer(newHandler(reg))
+	h := newHandler(reg)
+	h.channels = ch
+	srv := newHTTPServer(h)
 	if _, err := fmt.Fprintf(stdout, "scimux-team listening on http://%s\n", ln.Addr()); err != nil {
 		ln.Close()
 		return ioErr(err)

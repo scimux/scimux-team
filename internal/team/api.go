@@ -63,8 +63,9 @@ type seatJSON struct {
 	Name string `json:"name"`
 }
 
-// server is the HTTP handler. One mutex serializes registry access so a
-// later stage can add routes and a second store without rewriting this.
+// server is the HTTP handler. One mutex serializes the registry and the
+// channel store. The lock is not held while a body is read or a response
+// is written.
 type server struct {
 	reg      *registry.Registry
 	channels *channel.Store
@@ -113,16 +114,17 @@ func newHTTPServer(h http.Handler) *http.Server {
 	}
 }
 
-// errNotFound and errUnauthorized are handler results. They are not registry
-// failures: finish writes them as the constant protocol bodies.
+// errNotFound, errUnauthorized and errForbidden are handler results. They
+// are not store failures: finish writes them as the constant protocol bodies.
 var (
 	errNotFound     = errors.New("not found")
 	errUnauthorized = errors.New("unauthorized")
+	errForbidden    = errors.New("forbidden")
 )
 
 // ServeHTTP rejects a path that is not already in cleaned form, then
-// dispatches. A cleaned path the mux does not know, including every
-// /v1/channels path, is the constant not_found body.
+// dispatches. A cleaned path the mux does not know is the constant
+// not_found body, including a method this server does not register.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != cleanPath(r.URL.Path) {
 		s.notFound(w, r)
@@ -131,14 +133,21 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// withRegistry holds the handler mutex around Refresh and the registry
-// calls that use that refresh. Callers read the body before it and write
-// the response after it returns.
+// withRegistry holds the handler mutex around Refresh and the calls that
+// use that refresh. A revoke applied by Refresh is reconciled before the
+// request continues. Callers read a body before it and write the response
+// after it returns.
 func (s *server) withRegistry(fn func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.reg.Refresh(); err != nil {
+	revoked, err := s.reg.Refresh()
+	if err != nil {
 		return err
+	}
+	if len(revoked) > 0 {
+		if err := s.reconcile(nil); err != nil {
+			return err
+		}
 	}
 	return fn()
 }
@@ -150,9 +159,16 @@ func (s *server) finish(w http.ResponseWriter, err error, status int, v any) {
 			writeError(w, http.StatusNotFound, "not_found")
 		case errors.Is(err, errUnauthorized):
 			writeError(w, http.StatusUnauthorized, "unauthorized")
+		case errors.Is(err, errForbidden):
+			writeError(w, http.StatusForbidden, "forbidden")
 		default:
 			writeMapped(w, err)
 		}
+		return
+	}
+	if status == http.StatusNoContent {
+		writeHeaders(w)
+		w.WriteHeader(status)
 		return
 	}
 	writeJSON(w, status, v)
@@ -181,10 +197,22 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var token string
 	var srv registry.Server
 	err := s.withRegistry(func() error {
+		if beforeRegister != nil {
+			beforeRegister()
+		}
+		var revoked []string
 		var regErr error
-		token, _, regErr = s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
+		token, revoked, regErr = s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
 		if regErr != nil {
 			return regErr
+		}
+		// The id can be active again and still listed here: Register replays
+		// a revoke and then binds the same id. Skip it so the new seat
+		// inherits nothing.
+		if len(revoked) > 0 {
+			if err := s.reconcile(revoked); err != nil {
+				return err
+			}
 		}
 		srv = s.reg.Server()
 		return nil
@@ -262,6 +290,14 @@ func writeMapped(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "already_registered")
 	case errors.Is(err, registry.ErrFull):
 		writeError(w, http.StatusInsufficientStorage, "quota")
+	case errors.Is(err, channel.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "bad_request")
+	case errors.Is(err, channel.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large")
+	case errors.Is(err, channel.ErrQuota):
+		writeError(w, http.StatusInsufficientStorage, "quota")
+	case errors.Is(err, errUnknownMember):
+		writeError(w, http.StatusUnprocessableEntity, "unknown_member")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal")
 	}
