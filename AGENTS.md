@@ -26,6 +26,9 @@ go run ./tools/covercheck
 - `internal/journal` is the shared append-only line file.
 - `internal/registry` is the server identity, the join codes and the seats.
   They live in `registry.jsonl` inside the state directory.
+- `internal/channel` stores each channel under `channels/<owner>/<chat>/`
+  in that same directory: `channel.json`, `mirror.jsonl` and
+  `comments.jsonl`.
 - `tools/covercheck` is the coverage gate. It is not part of the product.
 - `attic/` is untracked scratch. `.gitignore` is a deny-by-default allowlist
   for `*.md`; a new tracked document needs its own `!` line.
@@ -47,12 +50,36 @@ go run ./tools/covercheck
   character, and no leading or trailing space. The default is `scimux team`.
   A name that breaks the rule is a usage error and the state directory is
   left untouched.
-- A request body is limited to 16 MiB. The handler lock covers `Refresh`
-  and the registry calls that follow it in that request. The lock is not
-  held while a body is read or a response is written.
-- The routes are `GET /v1/hello`, `POST /v1/register` and `GET /v1/seats`.
-  Every other path, including every path under `/v1/channels`, answers `404`
-  with the body `{"error":"not_found"}`.
+- A request body is limited to 16 MiB. One mutex serializes the registry
+  and the channel store. It covers `Refresh`, reconciliation and the
+  calls that follow them in that request. The lock is not held while a
+  body is read or a response is written.
+- The routes are `GET /v1/hello`, `POST /v1/register`, `GET /v1/seats`,
+  `GET /v1/channels`, `PUT` and `DELETE` on
+  `/v1/channels/{owner}/{chat}`, `PUT` on `.../members`, and `GET` and
+  `POST` on `.../mirror` and `.../comments`. A path or method this server
+  does not list answers `404` with `{"error":"not_found"}`. `GET`
+  patterns also match `HEAD`; those handlers answer `404` for `HEAD`.
+- Access is decided in one function. The caller is the owner, a write
+  member, a read member, or a stranger. A stranger and a missing channel
+  share that same `404` body. `PUT` or `DELETE` on a channel under
+  another seat's id is `403` for a member and `404` for a stranger. The
+  channel object carries `members` only for the owner.
+- `channel.json` holds the title, the generation, the created time and
+  the member list. It is the only file that is rewritten, and only by a
+  temporary file and a rename. The logs are append-only journals. New
+  directories are mode `0700` and new files are mode `0600`.
+- Limits are constants: 4 MiB per entry body, 16 MiB per request, 256
+  MiB per log, 1000 channels per owner and 200 members. A read returns
+  at most 256 entries and at most 16 MiB of bodies, and at least one
+  entry when one exists.
+- `Serve` opens the channel store and reconciles it before the listener
+  binds. A request whose `Refresh` reports revoked ids reconciles before
+  it does anything else. `Register` can report that the id it just bound
+  was revoked a moment earlier; that id is treated as inactive for the
+  cleanup, so the new seat inherits nothing. Reconciliation removes
+  every channel whose owner is not active and strips every member that
+  is not active.
 - Fuzz targets are `FuzzParse` in `internal/invite` and `FuzzJournal` in
   `internal/journal`, one in each package.
 
