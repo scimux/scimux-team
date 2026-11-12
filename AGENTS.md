@@ -40,6 +40,9 @@ go run ./tools/covercheck
   directory. Operator
   commands do not take that lock.
 - An active seat is one whose join code is redeemed. The limit is 200.
+- `-url` is `http://host`, `https://host`, or the same with `:port` where
+  the port is 1 to 65535. The scheme is lowercase. An IPv6 host is in
+  brackets. User information, a path, a query and a fragment are rejected.
 - `-name` follows the seat-name rule: 1 to 64 bytes of UTF-8, no control
   character, and no leading or trailing space. The default is `scimux team`.
   A name that breaks the rule is a usage error and the state directory is

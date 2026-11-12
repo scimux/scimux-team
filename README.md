@@ -37,8 +37,12 @@ scimux-team -state-dir ~/.scimux-team -json list
 ```
 
 `issue` prints the plaintext code once on stdout and the non-secret id on
-stderr. With `-url` it prints the join link `URL/join#CODE` instead. The
-server stores only a verifier. `-state-dir` defaults to `$HOME/.scimux-team`.
+stderr. With `-url` it prints the join link `URL/join#CODE` instead. `-url`
+is `http://host`, `https://host`, or the same with a port from 1 to 65535.
+The scheme is lowercase. An IPv6 host is written in brackets. User
+information, a path, a query and a fragment are rejected.
+
+The server stores only a verifier. `-state-dir` defaults to `$HOME/.scimux-team`.
 A missing state directory is created mode `0700`, including parents. An
 existing directory is used only when its permission bits are already `0700`;
 the tools do not change its mode.

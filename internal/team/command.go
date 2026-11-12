@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -111,15 +112,36 @@ func run(parent context.Context, args []string, version string, stdout, stderr i
 }
 
 func validateBaseURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || !allowedBase(u) {
+	if !allowedBase(raw) {
 		return usageErr(errors.New("-url must be an http or https URL with a host and no path, query or fragment"))
 	}
 	return nil
 }
 
-func allowedBase(u *url.URL) bool {
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+// allowedBase accepts only scheme://host or scheme://host:port. The scheme
+// is http or https in lowercase, the host is not empty, and a port is 1
+// to 65535. User information, a path, a query and a fragment are rejected.
+// Comparison with the raw text rejects a parse that rewrites the URL.
+func allowedBase(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.String() != raw {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	if u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return false
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || strconv.Itoa(n) != port || n < 1 || n > 65535 {
 		return false
 	}
 	return true
