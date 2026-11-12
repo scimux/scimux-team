@@ -21,9 +21,28 @@ go run ./tools/covercheck
   holds the linker-stamped version. Keep behavior out of it.
 - `internal/team` owns the server and the operator commands. Other
   `internal/*` packages are leaf subsystems and never import `internal/team`.
+- `internal/invite` generates and parses join codes. The domains are
+  `scimux-team/join-verifier/v1` and `scimux-team/join-id/v1`.
+- `internal/journal` is the shared append-only line file.
+- `internal/registry` is the server identity, the join codes and the seats.
+  They live in `registry.jsonl` inside the state directory.
 - `tools/covercheck` is the coverage gate. It is not part of the product.
 - `attic/` is untracked scratch. `.gitignore` is a deny-by-default allowlist
   for `*.md`; a new tracked document needs its own `!` line.
+
+## This stage
+
+- The state directory is `-state-dir`, default `$HOME/.scimux-team`, mode
+  `0700`. `registry.jsonl` is mode `0600`. While a server is running it holds
+  an exclusive non-blocking flock on `server.lock` in that directory. Operator
+  commands do not take that lock.
+- An active seat is one whose join code is redeemed. The limit is 200.
+- A request body is limited to 16 MiB.
+- The routes are `GET /v1/hello`, `POST /v1/register` and `GET /v1/seats`.
+  Every other path, including every path under `/v1/channels`, answers `404`
+  with the body `{"error":"not_found"}`.
+- Fuzz targets are `FuzzParse` in `internal/invite` and `FuzzJournal` in
+  `internal/journal`, one in each package.
 
 ## Invariants
 
