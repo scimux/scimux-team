@@ -963,16 +963,108 @@ func TestOpenRefusesBadPaths(t *testing.T) {
 	if _, err := Open(dir, Options{}); err == nil {
 		t.Fatal("opened a directory as the journal")
 	}
+}
 
-	orig := chmodPath
-	t.Cleanup(func() { chmodPath = orig })
-	chmodPath = func(string, os.FileMode) error { return errors.New("chmod failed") }
-	state := filepath.Join(t.TempDir(), "state")
-	if _, err := Open(state, Options{}); err == nil || err.Error() != "chmod failed" {
-		t.Fatalf("chmod %v", err)
+func TestMissingStateDirectoryIsCreated0700(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "parent")
+	dir := filepath.Join(parent, "state")
+	openReg(t, dir, Options{Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16)), Now: fixed(tsEarly)})
+	for _, path := range []string{parent, dir} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode %o", path, info.Mode().Perm())
+		}
 	}
-	if _, err := os.Stat(filepath.Join(state, journalName)); !os.IsNotExist(err) {
-		t.Fatal("chmod failure left a journal")
+}
+
+func TestExistingDirectoryMustAlreadyBe0700(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "marker")
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(dir, Options{Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16)), Now: fixed(tsEarly)})
+	if err == nil || err.Error() != "state directory: mode 0755, want 0700" {
+		t.Fatalf("Open %v", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	body, err := os.ReadFile(marker)
+	if err != nil || string(body) != "keep" {
+		t.Fatalf("marker %q %v", body, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, journalName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("Open wrote a journal")
+	}
+}
+
+func TestFileInPlaceOfStateDirectoryIsRefused(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(dir, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(dir, Options{})
+	if err == nil || err.Error() != "state directory: not a directory" {
+		t.Fatalf("Open %v", err)
+	}
+	body, err := os.ReadFile(dir)
+	if err != nil || string(body) != "keep" {
+		t.Fatalf("file %q %v", body, err)
+	}
+
+	target := t.TempDir()
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "marker")
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Open(link, Options{Entropy: bytes.NewReader(bytes.Repeat([]byte{0x02}, 16))})
+	if err == nil || err.Error() != "state directory: not a directory" {
+		t.Fatalf("symlink %v", err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("target mode %v %v", info, err)
+	}
+	body, err = os.ReadFile(marker)
+	if err != nil || string(body) != "keep" {
+		t.Fatalf("marker %q %v", body, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, journalName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("Open wrote through the symlink")
+	}
+
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, []byte("parent"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(parent, "child"), Options{}); err == nil {
+		t.Fatal("opened a directory under a file")
+	}
+	body, err = os.ReadFile(parent)
+	if err != nil || string(body) != "parent" {
+		t.Fatalf("parent %q %v", body, err)
+	}
+
+	if _, err := Open("bad\x00name", Options{}); err == nil {
+		t.Fatal("opened a path containing NUL")
 	}
 }
 

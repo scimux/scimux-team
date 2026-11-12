@@ -186,6 +186,24 @@ func TestServerNameIsAUsageError(t *testing.T) {
 	}
 }
 
+func TestStateDirectoryModeThroughRun(t *testing.T) {
+	restoreSeams(t)
+	entropy = bytes.NewReader(bytes.Repeat([]byte{0x01}, 16))
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code, err := runCmd("-state-dir", dir, "status")
+	info, statErr := os.Lstat(dir)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	_, journalErr := os.Stat(filepath.Join(dir, "registry.jsonl"))
+	if code != exitIO || err == nil || err.Error() != "state directory: mode 0755, want 0700" || stdout != "" || info.Mode().Perm() != 0o755 || !errors.Is(journalErr, os.ErrNotExist) {
+		t.Fatalf("code=%d err=%v stdout %q mode %o journal %v", code, err, stdout, info.Mode().Perm(), journalErr)
+	}
+}
+
 func TestListHumanJSONAndFilters(t *testing.T) {
 	restoreSeams(t)
 	nowFn = fixedNow
