@@ -398,6 +398,110 @@ func TestCorruptJournalIsInternalAndMarshalFailureHidesTheToken(t *testing.T) {
 	}
 }
 
+func TestRegisterBodyDoesNotHoldTheLock(t *testing.T) {
+	reg, h := testHandler(t, &seqReader{}, "relay a")
+	codeOther, _, err := reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	entered := make(chan struct{})
+	done := make(chan struct {
+		status int
+		body   string
+	}, 1)
+	go func() {
+		status, _, body := do(h, http.MethodPost, "/v1/register", "", &signalReader{r: pr, entered: entered})
+		done <- struct {
+			status int
+			body   string
+		}{status, string(body)}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("register did not start reading")
+	}
+
+	helloDone := make(chan int, 1)
+	go func() {
+		status, _, _ := do(h, http.MethodGet, "/v1/hello", "", nil)
+		helloDone <- status
+	}()
+	select {
+	case status := <-helloDone:
+		if status != http.StatusOK {
+			t.Fatalf("hello %d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hello blocked behind the register body")
+	}
+
+	regDone := make(chan int, 1)
+	go func() {
+		status, _, _ := do(h, http.MethodPost, "/v1/register", "", strings.NewReader(jsonBody(codeOther, inst(0x21), "other seat")))
+		regDone <- status
+	}()
+	select {
+	case status := <-regDone:
+		if status != http.StatusCreated {
+			t.Fatalf("register %d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("registration blocked behind the register body")
+	}
+
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.status != http.StatusBadRequest || got.body != `{"error":"bad_request"}` {
+			t.Fatalf("stalled %d %s", got.status, got.body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled register did not answer")
+	}
+}
+
+func TestResponseWriteDoesNotHoldTheLock(t *testing.T) {
+	_, h := testHandler(t, &seqReader{n: 80}, "relay a")
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	writer := &stallWriter{entered: entered, release: release, hdr: make(http.Header)}
+	finished := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://relay.example/v1/hello", nil)
+		h.ServeHTTP(writer, req)
+		close(finished)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("response was not written")
+	}
+	second := make(chan int, 1)
+	go func() {
+		status, _, _ := do(h, http.MethodGet, "/v1/hello", "", nil)
+		second <- status
+	}()
+	select {
+	case status := <-second:
+		if status != http.StatusOK {
+			t.Fatalf("second hello %d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second request blocked behind the response write")
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("blocked write did not finish")
+	}
+}
+
 func TestServerLimits(t *testing.T) {
 	srv := newHTTPServer(http.NewServeMux())
 	if srv.ReadHeaderTimeout != readHeaderTimeout || srv.ReadTimeout != readTimeout || srv.WriteTimeout != writeTimeout || srv.IdleTimeout != idleTimeout || srv.MaxHeaderBytes != maxHeaderBytes {
@@ -469,6 +573,34 @@ func inst(b byte) string {
 
 func fixedNow() time.Time {
 	return time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+}
+
+type signalReader struct {
+	r       io.Reader
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *signalReader) Read(p []byte) (int, error) {
+	s.once.Do(func() { close(s.entered) })
+	return s.r.Read(p)
+}
+
+type stallWriter struct {
+	hdr     http.Header
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (s *stallWriter) Header() http.Header { return s.hdr }
+
+func (s *stallWriter) WriteHeader(int) {}
+
+func (s *stallWriter) Write(p []byte) (int, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return len(p), nil
 }
 
 type seqReader struct{ n byte }
