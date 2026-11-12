@@ -1,0 +1,12 @@
+name: Release
+on:
+  release:
+    types: [published]
+permissions: {}
+jobs:
+  release:
+    permissions:
+      contents: write
+    # An explicit main ref is essential: a relative path would use the tag's
+    # workflow version and would not match the runner-group allowlist.
+    uses: scimux/scimux-team/.github/workflows/release-worker.yml@main

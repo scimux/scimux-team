@@ -1,0 +1,178 @@
+# Jobs are defined on protected main rather than the calling release tag.
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  build-and-test:
+    if: >-
+      github.repository == 'scimux/scimux-team' &&
+      github.event_name == 'release' &&
+      github.event.action == 'published' &&
+      github.ref_type == 'tag'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, x64, go-builder]
+    container:
+      image: golang:1.27.1-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b
+    env:
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Add missing build tools
+        run: apk add --no-cache coreutils file git nodejs build-base
+      - name: Clean dedicated workspace
+        run: |
+          set -eu
+          test -n "$GITHUB_WORKSPACE"
+          test "$GITHUB_WORKSPACE" != /
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      - name: Clone and bind the release tag to its commit
+        env:
+          GITHUB_CLONE_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          case "$COMMIT_SHA" in
+            ????????????????????????????????????????) ;;
+            *) echo "not a full commit id: $COMMIT_SHA" >&2; exit 1 ;;
+          esac
+          case "$COMMIT_SHA" in *[!0-9a-f]*) echo "not a commit id: $COMMIT_SHA" >&2; exit 1 ;; esac
+          case "$REF_NAME" in *[!0-9A-Za-z.-]*) echo "release tag has characters outside 0-9A-Za-z.-: $REF_NAME" >&2; exit 1 ;; esac
+          printf '%s\n' "$REF_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo "not an exact vMAJOR.MINOR.PATCH tag: $REF_NAME" >&2; exit 1; }
+          case "$GITHUB_CLONE_TOKEN" in
+            ''|*[!0-9A-Za-z_.-]*) echo "GITHUB_CLONE_TOKEN must be a single-line GitHub repository token" >&2; exit 1 ;;
+          esac
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Command-local helper: no token in argv, origin URL, or credential store.
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= \
+            -c 'credential.helper=!f() { if [ "$1" = get ]; then printf "%s\n" "username=x-access-token" "password=$GITHUB_CLONE_TOKEN"; fi; }; f' \
+            clone https://github.com/scimux/scimux-team.git .
+          unset GITHUB_CLONE_TOKEN
+          git show-ref --verify --quiet "refs/tags/$REF_NAME" || { echo "release ref is not a repository tag: $REF_NAME" >&2; exit 1; }
+          TAG_COMMIT="$(git rev-parse "refs/tags/$REF_NAME^{commit}")"
+          test "$TAG_COMMIT" = "$COMMIT_SHA" || { echo "release tag does not name event commit" >&2; exit 1; }
+          # Reject unmerged release commits before executing repository code.
+          git merge-base --is-ancestor "$COMMIT_SHA" refs/remotes/origin/main \
+            || { echo "release commit is not on protected main" >&2; exit 1; }
+          git checkout --detach "$COMMIT_SHA"
+          mkdir -p builds
+      - name: Check formatting and vet
+        run: |
+          test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+          go vet ./...
+      - name: Verify no third-party dependencies
+        run: |
+          if grep -qE '^\s*require' go.mod; then echo "go.mod has a require block; scimux-team must stay stdlib-only"; exit 1; fi
+          test ! -f go.sum || { echo "go.sum exists; scimux-team must stay stdlib-only"; exit 1; }
+      - name: Scan known Go vulnerabilities
+        run: |
+          set -eu
+          GOBIN=/tmp/go-tools go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          /tmp/go-tools/govulncheck ./...
+      - name: Run tests
+        run: CGO_ENABLED=1 go test -race ./...
+      - name: Coverage gate
+        run: |
+          # Every statement runs and every `if` is seen both ways in the
+          # package's own tests; see tools/covercheck.
+          go run ./tools/covercheck
+      - name: Fuzz join code parsing
+        run: go test ./internal/invite -run '^$' -fuzz=FuzzParse -fuzztime=20s
+      - name: Fuzz journal reading
+        run: go test ./internal/journal -run '^$' -fuzz=FuzzJournal -fuzztime=20s
+      - name: Build static release binaries
+        run: |
+          set -eu
+          for target in freebsd/amd64 freebsd/arm64 linux/amd64 linux/arm64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"; out="builds/scimux-team-${os}-${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=${REF_NAME}" -o "$out" ./cmd/scimux-team
+            file "$out"
+            case "$os" in freebsd|linux) file "$out" | grep -q "statically linked" || { echo "ERROR: $out is not statically linked"; exit 1; } ;; esac
+          done
+      - name: Checksum the exact release files
+        run: |
+          cd builds
+          sha256sum scimux-team-darwin-arm64 scimux-team-freebsd-amd64 scimux-team-freebsd-arm64 scimux-team-linux-amd64 scimux-team-linux-arm64 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Hand tested files to the fresh publisher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scimux-team-release-${{ github.sha }}
+          path: builds/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runner labels only schedule work. Authorization is maintainer-only write
+  # access; production credentials remain outside this ordinary repository CI.
+  publish:
+    timeout-minutes: 10
+    needs: build-and-test
+    permissions:
+      contents: write
+    runs-on: [self-hosted, linux, x64, release-publisher]
+    container:
+      image: golang:1.27.1-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b
+    steps:
+      - name: Add publishing tools
+        run: apk add --no-cache bash curl jq coreutils nodejs
+      - name: Clean dedicated workspace
+        run: |
+          set -eu
+          test -n "$GITHUB_WORKSPACE"
+          test "$GITHUB_WORKSPACE" != /
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      - name: Download tested release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: scimux-team-release-${{ github.sha }}
+          path: handoff
+      - name: Verify closed inventory and exact digests
+        run: |
+          set -eu
+          test -z "$(find handoff -type l -print -quit)" || { echo "symlink in release artifact" >&2; exit 1; }
+          test -z "$(find handoff -mindepth 1 -maxdepth 1 ! -type f -print -quit)" || { echo "non-regular release artifact" >&2; exit 1; }
+          actual="$(find handoff -mindepth 1 -maxdepth 1 -print | sed 's#^handoff/##' | LC_ALL=C sort)"
+          expected='SHA256SUMS
+          scimux-team-darwin-arm64
+          scimux-team-freebsd-amd64
+          scimux-team-freebsd-arm64
+          scimux-team-linux-amd64
+          scimux-team-linux-arm64'
+          test "$actual" = "$expected" || { echo "unexpected release artifact inventory" >&2; printf '%s\n' "$actual" >&2; exit 1; }
+          cd handoff
+          awk '
+            NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { bad=1; next }
+            $2 !~ /^scimux-team-(darwin-arm64|freebsd-(amd64|arm64)|linux-(amd64|arm64))$/ { bad=1; next }
+            { seen[$2]++; count++ }
+            END { for (name in seen) unique++; exit (bad || count != 5 || unique != 5) }
+          ' SHA256SUMS || { echo "invalid checksum manifest" >&2; exit 1; }
+          sha256sum -c SHA256SUMS
+      - name: Fetch only the reviewed publishing script
+        env:
+          GITHUB_CLONE_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          case "$COMMIT_SHA" in
+            ????????????????????????????????????????) ;;
+            *) echo "not a full commit id: $COMMIT_SHA" >&2; exit 1 ;;
+          esac
+          case "$COMMIT_SHA" in *[!0-9a-f]*) echo "not a commit id: $COMMIT_SHA" >&2; exit 1 ;; esac
+          case "$GITHUB_CLONE_TOKEN" in
+            ''|*[!0-9A-Za-z_.-]*) echo "GITHUB_CLONE_TOKEN must be a single-line GitHub repository token" >&2; exit 1 ;;
+          esac
+          # Supply authentication on stdin, never in command arguments or a file.
+          { printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_CLONE_TOKEN"; \
+            printf 'header = "Accept: application/vnd.github.raw+json"\n'; \
+            printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'; } | \
+            curl -q --config - -fsS -o /tmp/github-release.sh \
+              "https://api.github.com/repos/scimux/scimux-team/contents/.github/github-release.sh?ref=$COMMIT_SHA"
+          unset GITHUB_CLONE_TOKEN
+          chmod 0500 /tmp/github-release.sh
+      - name: Attach the verified files
+        env:
+          GITHUB_RELEASE_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: /tmp/github-release.sh "$REF_NAME" ./handoff

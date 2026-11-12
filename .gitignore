@@ -11,6 +11,7 @@ state/
 !README.md
 !AGENTS.md
 !CLAUDE.md
+!SECURITY.md
 !docs/protocol/team-v1.md
 
 # Untracked scratch: plans, reviews and private tools. Never a build, test

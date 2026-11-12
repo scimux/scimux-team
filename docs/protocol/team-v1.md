@@ -67,9 +67,9 @@ A join code admits exactly one seat, once. After a successful registration
 it is used up. An unused code expires 30 days after it was issued, and the
 operator can revoke it earlier.
 
-`GET /join` answers `200` with a fixed plain-text sentence, so a person who
-opens the link in a browser sees what it is. The server never receives the
-part after `#` this way.
+The server has no `/join` route. The link is a carrier for the address and
+the code; the seat takes it apart and never requests it. The part after `#`
+is not sent to a server even when a person opens the link in a browser.
 
 ## 4. Routes without authentication
 
@@ -121,7 +121,8 @@ A channel object:
   "created_at": "2026-11-12T09:30:00.000Z",
   "access": "owner",
   "mirror_last": 42,
-  "comments_last": 3
+  "comments_last": 3,
+  "members": [{"seat":"<32 hex>","access":"read"}]
 }
 ```
 
@@ -129,7 +130,8 @@ A channel object:
 and `comments_last` are the highest sequence numbers, or `0` for an empty
 log. `generation` is chosen at random when the channel is created. A client
 that sees a different generation for a known channel discards its read
-positions for it.
+positions for it. `members` is present only when the caller is the owner;
+it is ordered by seat.
 
 ### `GET /v1/channels`
 
@@ -151,10 +153,6 @@ Owner only. Creates the channel, or changes its title.
 `title` is 0 to 200 bytes of UTF-8 without control characters. Answers `201`
 with the channel object when created and `200` when it already existed.
 
-### `GET /v1/channels/{owner}/{chat}`
-
-Owner and members. Answers `200` with the channel object.
-
 ### `DELETE /v1/channels/{owner}/{chat}`
 
 Owner only. Removes the channel and both logs from the server. Answers
@@ -171,11 +169,7 @@ Owner only. Replaces the whole member list.
 
 At most 200 members. `access` is `read` or `write`. A seat listed twice, or
 the owner listed, is `bad_request`. A seat that is not registered is
-`unknown_member`. Answers `200` with the stored list, ordered by seat.
-
-### `GET /v1/channels/{owner}/{chat}/members`
-
-Owner and members. Answers `200` with the stored list in the same shape.
+`unknown_member`. Answers `200` with the channel object.
 
 ## 7. Logs
 
@@ -215,11 +209,10 @@ Answers `200`:
 
 ### Read: `GET` on a log
 
-Query values: `after` is a sequence number and defaults to `0`. `limit` is 1
-to 256 and defaults to 256.
+The query value `after` is a sequence number and defaults to `0`.
 
 Answers `200` with the entries whose sequence number is greater than
-`after`, in order:
+`after`, in order, at most 256 of them:
 
 ```json
 {

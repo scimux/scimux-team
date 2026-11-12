@@ -1,0 +1,103 @@
+name: PR checks
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: PR tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the PR merge commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bash curl jq file git build-essential
+      - name: Prepare build output
+        run: mkdir -p builds
+      - name: Check formatting and vet
+        run: |
+          test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+          go vet ./...
+
+      - name: Verify no third-party dependencies
+        run: |
+          # scimux-team is standard library only (AGENTS.md). A require
+          # block fails the build here rather than at review time.
+          if grep -qE '^\s*require' go.mod; then
+            echo "go.mod has a require block; scimux-team must stay stdlib-only"; exit 1
+          fi
+          test ! -f go.sum || { echo "go.sum exists; scimux-team must stay stdlib-only"; exit 1; }
+
+      - name: Scan known Go vulnerabilities
+        run: |
+          set -eu
+          # Install the audit tool outside the module: it must not become a
+          # runtime or go.mod dependency of the standard-library-only server.
+          GOBIN=/tmp/go-tools go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          /tmp/go-tools/govulncheck ./...
+
+      - name: Run tests
+        run: |
+          CGO_ENABLED=1 go test -race ./...
+      - name: Coverage gate
+        run: |
+          # Every statement runs and every `if` is seen both ways in the
+          # package's own tests; see tools/covercheck.
+          go run ./tools/covercheck
+      - name: Fuzz join code parsing
+        run: go test ./internal/invite -run '^$' -fuzz=FuzzParse -fuzztime=20s
+      - name: Fuzz journal reading
+        run: go test ./internal/journal -run '^$' -fuzz=FuzzJournal -fuzztime=20s
+
+      - name: Build static binaries
+        run: |
+          set -eu
+          # CGO_ENABLED=0 is what makes these static: the net and os/user
+          # packages otherwise link the system resolver via cgo. FreeBSD is
+          # the deployment target (jailed, minimal base), so a binary with no
+          # runtime library dependency is a requirement, not a preference.
+          VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          for target in \
+            freebsd/amd64 \
+            freebsd/arm64 \
+            linux/amd64 \
+            linux/arm64 \
+            darwin/arm64
+          do
+            os="${target%/*}"; arch="${target#*/}"
+            out="builds/scimux-team-${os}-${arch}"
+            echo "--- $target"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "$out" ./cmd/scimux-team
+            file "$out"
+            # Darwin binaries always link libSystem dynamically, so the
+            # static assertion applies to the ELF targets only.
+            case "$os" in
+              freebsd|linux)
+                file "$out" | grep -q "statically linked" \
+                  || { echo "ERROR: $out is not statically linked"; exit 1; }
+                ;;
+            esac
+          done
+
+      - name: Smoke-test the native binary
+        run: |
+          set -eu
+          # Proves the artifact actually starts before anything is published.
+          CGO_ENABLED=0 go build -o /tmp/scimux-team ./cmd/scimux-team
+          /tmp/scimux-team -version
