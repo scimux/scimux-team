@@ -10,11 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/scimux/scimux-team/internal/invite"
 )
+
+func TestMain(m *testing.M) {
+	// Go 1.27 creates t.TempDir with mode 0777. This umask makes that 0700,
+	// which is the only mode Open accepts for a directory that already exists.
+	syscall.Umask(0o077)
+	os.Exit(m.Run())
+}
 
 const (
 	tsEarly = "2026-11-12T09:30:00Z"

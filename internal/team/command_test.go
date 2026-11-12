@@ -22,6 +22,13 @@ import (
 	"github.com/scimux/scimux-team/internal/registry"
 )
 
+func TestMain(m *testing.M) {
+	// Go 1.27 creates t.TempDir with mode 0777. This umask makes that 0700,
+	// which is the only mode Open accepts for a directory that already exists.
+	syscall.Umask(0o077)
+	os.Exit(m.Run())
+}
+
 const revokeSentence = "the seat's token stops working and its channels and memberships are removed"
 
 func TestExitCodes(t *testing.T) {
