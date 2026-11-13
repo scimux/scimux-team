@@ -15,14 +15,20 @@ It is plain HTTP with JSON bodies. Seats poll; there is no push channel.
 - **Mirror.** The channel's append-only log of the owner's chat records.
 - **Comments.** The channel's append-only log of what members wrote.
 - **Entry.** One record in a log. Its body is an opaque JSON value.
+- **Blob.** An unchangeable byte string of 1 byte to 4 MiB that belongs
+  to a channel. It is named by the SHA-256 of its bytes: 64 lowercase
+  hexadecimal characters.
 
 ## 2. Conventions
 
 - Every path below is under the server's base URL.
 - A request with a body sends one JSON object. Unknown fields, a second JSON
-  value after the object and a body over 16 MiB are rejected.
+  value after the object and a body over 16 MiB are rejected. The one
+  exception is a blob upload, which sends raw bytes.
 - A response with a body is `application/json` and carries
-  `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
+  `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. The one
+  exception is a blob download, which is `application/octet-stream` with
+  the same two headers.
 - Times are UTC in the form `2026-11-12T09:30:00.000Z`.
 - Authentication is `Authorization: Bearer <token>`.
 - A path or method that this document does not list answers `404 not_found`.
@@ -37,10 +43,10 @@ An error response is `{"error":"<code>"}` with one of these codes:
 | 403 | `forbidden` | The caller can see the channel but may not do this |
 | 404 | `not_found` | No such route, or no channel the caller can see |
 | 409 | `already_registered` | The installation ID is registered |
-| 413 | `too_large` | Body over 16 MiB, or an entry body over 4 MiB |
+| 413 | `too_large` | Body over 16 MiB, an entry body over 4 MiB, or a blob over 4 MiB |
 | 422 | `unknown_member` | A member list names a seat that is not registered |
 | 500 | `internal` | The server could not read or write its state |
-| 507 | `quota` | A seat, channel or log limit is reached |
+| 507 | `quota` | A seat, channel, log or blob limit is reached |
 
 Checks run in this order: authentication, then whether the caller can see
 the channel, then whether the caller may do this, then the request content.
@@ -108,6 +114,37 @@ All registered seats, ordered by ID. Revoked seats are absent.
 {"seats":[{"id":"<32 hex>","name":"Berger"}]}
 ```
 
+### `PUT /v1/seat`
+
+Changes the caller's own name.
+
+```json
+{"name":"Berger at the lab"}
+```
+
+`name` follows the rule of registration. Answers `200`:
+
+```json
+{"id":"<32 hex>","name":"Berger at the lab"}
+```
+
+`GET /v1/seats` shows the new name at once. Entries name their author by
+ID, so nothing else changes.
+
+### `DELETE /v1/seat`
+
+The caller leaves the server. The request body is not read. Answers `204`.
+
+Leaving has the effect of a revocation, section 8: the token stops working,
+the seat disappears from `GET /v1/seats`, the server removes the channels
+the seat owned and removes the seat from every member list. The operator
+sees the seat's join code as revoked. The same installation ID can register
+again with a new join code and then starts with nothing.
+
+If the server cannot finish removing the channels, it answers `500`. The
+seat is gone all the same; a repeated request answers `401`, and the server
+finishes the removal before it serves another request.
+
 ## 6. Channels
 
 A channel object:
@@ -170,6 +207,11 @@ Owner only. Replaces the whole member list.
 At most 200 members. `access` is `read` or `write`. A seat listed twice, or
 the owner listed, is `bad_request`. A seat that is not registered is
 `unknown_member`. Answers `200` with the channel object.
+
+### `DELETE /v1/channels/{owner}/{chat}/membership`
+
+Members only. The caller removes itself from the member list. Answers
+`204`. The owner gets `forbidden`. Entries the member wrote stay.
 
 ## 7. Logs
 
@@ -238,3 +280,37 @@ disappears from `GET /v1/seats`, the server removes the channels it owned,
 and the server removes it from every member list. The same installation ID
 can then register again with a new join code. It starts with no channels
 and no memberships, so a new holder of the ID inherits nothing.
+
+## 9. Blobs
+
+A blob carries an image or an attachment that an entry refers to. The
+server never interprets it and stores no media type and no file name; the
+entry that refers to the blob carries those.
+
+| | Read | Write |
+| --- | --- | --- |
+| Blob | owner, `read`, `write` | owner, `write` |
+
+### `PUT /v1/channels/{owner}/{chat}/blobs/{id}`
+
+The body is the raw bytes, 1 byte to 4 MiB. `id` is the SHA-256 of the
+body. Answers `201` when the blob is new and `200` when it was already
+stored, both with:
+
+```json
+{"id":"<64 hex>","size":20481}
+```
+
+An `id` that is not 64 lowercase hexadecimal characters, an empty body and
+a body whose SHA-256 is not `id` are `bad_request`. A body over 4 MiB is
+`too_large`. A channel holds at most 4096 blobs and at most 256 MiB of
+blob bytes; an upload that would pass either limit is `quota`.
+
+### `GET /v1/channels/{owner}/{chat}/blobs/{id}`
+
+Answers `200` with the bytes. A blob that is not stored is `not_found`.
+
+A blob cannot be changed or removed on its own, and blobs cannot be
+listed. Removing the channel removes its blobs. A blob stays when the seat
+that uploaded it leaves the channel, leaves the server or is revoked,
+unless that seat owned the channel.
