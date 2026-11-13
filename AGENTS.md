@@ -28,8 +28,8 @@ go run ./tools/covercheck
 - `internal/registry` is the server identity, the join codes and the seats.
   They live in `registry.jsonl` inside the state directory.
 - `internal/channel` stores each channel under `channels/<owner>/<chat>/`
-  in that same directory: `channel.json`, `mirror.jsonl` and
-  `comments.jsonl`.
+  in that same directory: `channel.json`, `mirror.jsonl`,
+  `comments.jsonl` and `blobs/<id>`.
 - `tools/covercheck` is the coverage gate. It is not part of the product.
 - `attic/` is untracked scratch. `.gitignore` is a deny-by-default allowlist
   for `*.md`; a new tracked document needs its own `!` line.
@@ -51,37 +51,48 @@ go run ./tools/covercheck
   character, and no leading or trailing space. The default is `scimux team`.
   A name that breaks the rule is a usage error and the state directory is
   left untouched.
-- A request body is limited to 16 MiB. One mutex serializes the registry
-  and the channel store. It covers a due cleanup, `Refresh`,
-  reconciliation and the calls that follow them in that request. The
-  lock is not held while a body is read or a response is written.
+- A JSON request body is limited to 16 MiB. A blob upload is raw bytes,
+  at most 4 MiB, and a longer body is rejected after at most 4 MiB plus
+  one byte. One mutex serializes the registry and the channel store. It
+  covers a due cleanup, `Refresh`, reconciliation and the calls that
+  follow them in that request. The lock is not held while a body is read
+  or a response is written.
 - The routes are `GET /v1/hello`, `POST /v1/register`, `GET /v1/seats`,
-  `GET /v1/channels`, `PUT` and `DELETE` on
-  `/v1/channels/{owner}/{chat}`, `PUT` on `.../members`, and `GET` and
-  `POST` on `.../mirror` and `.../comments`. A path or method this server
-  does not list answers `404` with `{"error":"not_found"}`. `GET`
-  patterns also match `HEAD`; those handlers answer `404` for `HEAD`.
+  `PUT` and `DELETE` on `/v1/seat`, `GET /v1/channels`, `PUT` and
+  `DELETE` on `/v1/channels/{owner}/{chat}`, `PUT` on `.../members`,
+  `DELETE` on `.../membership`, `PUT` and `GET` on `.../blobs/{id}`, and
+  `GET` and `POST` on `.../mirror` and `.../comments`. A path or method
+  this server does not list answers `404` with `{"error":"not_found"}`.
+  `GET` patterns also match `HEAD`; those handlers answer `404` for
+  `HEAD`.
 - Access is decided in one function. The caller is the owner, a write
   member, a read member, or a stranger. A stranger and a missing channel
   share that same `404` body. `PUT` or `DELETE` on a channel under
-  another seat's id is `403` for a member and `404` for a stranger. The
-  channel object carries `members` only for the owner.
+  another seat's id is `403` for a member and `404` for a stranger.
+  `DELETE` on `.../membership` is `204` for a member and `403` for the
+  owner. The channel object carries `members` only for the owner.
 - `channel.json` holds the title, the generation, the created time and
   the member list. It is the only file that is rewritten, and only by a
-  temporary file and a rename. The logs are append-only journals. A
-  damaged `channel.json` or a damaged log is a hard error for that
-  channel. `List` leaves it out, and `Reconcile` does not fail on it.
-  `Reconcile` still removes a damaged channel whose owner is not active.
-  The server starts with damaged channels on disk. A seat's list loads
-  only the logs of channels that seat owns or belongs to. The index of a
-  log keeps no entry body. A line that changes after it was indexed fails
-  a read of that channel. A channel log is not held open between calls.
-  The server that holds `server.lock` is the only writer of those logs.
-  New directories are mode `0700` and new files are mode `0600`.
-- Limits are constants: 4 MiB per entry body, 16 MiB per request, 256
+  temporary file and a rename. The logs are append-only journals. A blob
+  is one file under `blobs/<id>`, created once through a temporary file
+  and a rename, and not rewritten. It is opaque bytes with no media type
+  and no file name. A damaged `channel.json` or a damaged log is a hard
+  error for that channel. A damaged blob is a hard error for that blob
+  only; the channel and its other blobs keep working. `List` leaves a
+  damaged channel out, and `Reconcile` does not fail on it. `Reconcile`
+  still removes a damaged channel whose owner is not active. The server
+  starts with damaged channels on disk. A seat's list loads only the
+  logs of channels that seat owns or belongs to. The index of a log
+  keeps no entry body. A line that changes after it was indexed fails a
+  read of that channel. A channel log is not held open between calls,
+  and neither is a blob file. The server that holds `server.lock` is the
+  only writer of those logs. New directories are mode `0700` and new
+  files are mode `0600`.
+- Limits are constants: 4 MiB per entry body, 16 MiB per JSON request, 4
+  MiB per blob, 4096 blobs and 256 MiB of blob bytes per channel, 256
   MiB per log, 1000 channels per owner and 200 members. A read returns
   at most 256 entries and at most 16 MiB of bodies, and at least one
-  entry when one exists.
+  entry when one exists. There is no flag for any of these.
 - `Serve` opens the channel store and reconciles it before the listener
   binds. A request whose `Refresh` reports revoked ids reconciles before
   it does anything else. `Register` can report that the id it just bound
@@ -103,13 +114,18 @@ go run ./tools/covercheck
   supported targets.
 - **Store and forward, never interpret.** An entry body is an opaque JSON
   value. The server checks that it is valid JSON and within the size limit,
-  and nothing else. It never parses, searches, summarizes or rewrites it.
+  and nothing else. A blob is opaque bytes. The server checks the size and
+  that the SHA-256 matches the id, and nothing else. It never parses,
+  searches, summarizes or rewrites either one.
 - **The owner decides.** Only the owning seat writes a channel's mirror,
-  title and member list. A seat that is neither the owner nor a listed member
-  gets the same answer as for a channel that does not exist.
+  title and member list. A member can remove itself from that list. A
+  seat that is neither the owner nor a listed member gets the same answer
+  as for a channel that does not exist.
 - **An installation ID is a public label, not a credential.** Only the token
   issued at registration authenticates a seat. A registered installation ID
-  cannot be registered again until the operator revokes it.
+  cannot be registered again while that seat is active. Leaving revokes the
+  seat, as an operator revoke does. The same installation ID can then
+  register with a new join code and starts with nothing.
 - **Join codes are this server's own.** Only the `issue` command of
   `scimux-team` creates one. Each code admits one seat, once. Nothing issued
   by `scimux-rv` or any other service is ever valid here.
@@ -121,10 +137,10 @@ go run ./tools/covercheck
   registering again.
 - **Logs are append-only and never rewritten in place.** A torn final line is
   ignored and removed before the next append. A damaged complete line is a
-  hard error, never skipped. Removing a channel removes its files; that is
-  the one deletion.
+  hard error, never skipped. Removing a channel removes its files,
+  including its blobs; that is the one deletion.
 - **Nothing shared is logged.** No request log, no entry body, title, name,
-  token or join code on stdout or stderr.
+  token, join code, blob byte or blob ID on stdout or stderr.
 - **Plain HTTP by design.** TLS belongs to a proxy in front. Do not add
   certificate handling.
 - **Fixtures are synthetic.** No real transcript content, host names, paths

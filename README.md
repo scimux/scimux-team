@@ -6,15 +6,17 @@ scimux runs on your own machine and stays a single-seat tool. `scimux-team`
 is a small relay that a research group runs on its own infrastructure. A seat
 that joins it can mirror a chat it chose to share. Other seats that the owner
 invited can read the mirror and, if allowed, add comments. The server stores
-and forwards. It never reads what it stores.
+and forwards. It never interprets what it stores.
 
-Status: a seat can join, and an owner can share a chat. The operator
+Status: a seat can join, rename itself and leave. Leaving has the same
+effect as an operator revoke. An owner can share a chat. The operator
 commands are `issue`, `list`, `revoke` and `status`. A seat registers
 with a one-time join code and can list the registered seats. An owner
 creates a channel, sets its title and member list, appends to its mirror
 and removes it. A member reads the mirror and the comments. A member
-with write access appends comments. Revoking a seat removes the channels
-it owned and its memberships. The wire contract is
+with write access appends comments. A member can remove itself from one
+channel. A channel can hold blobs. Revoking a seat, or the seat leaving,
+removes the channels it owned and its memberships. The wire contract is
 [`docs/protocol/team-v1.md`](docs/protocol/team-v1.md).
 
 ## Trust model
@@ -53,22 +55,31 @@ the tools do not change its mode.
 
 Beside `registry.jsonl` the state directory holds one directory per
 channel, `channels/<owner>/<chat>/`. That directory contains
-`channel.json`, `mirror.jsonl` and `comments.jsonl`. `channel.json` is
-replaced through a temporary file and a rename. The two logs are
-append-only. A damaged `channel.json` or log is left out of the channel
-list and does not stop the server or any other channel; requests for
-that channel itself fail. A seat's list loads only the logs of channels
-that seat owns or belongs to. The index of a log keeps no entry body.
-A line that changes after it was indexed fails a read of that channel.
-A log file is not held open between calls. The server that holds
-`server.lock` is the only writer of a channel log. New directories are
-mode `0700` and new files are mode `0600`.
+`channel.json`, `mirror.jsonl`, `comments.jsonl` and `blobs/<id>`.
+`channel.json` is replaced through a temporary file and a rename. The
+two logs are append-only. A blob is one file of opaque bytes, named by
+the SHA-256 of those bytes. It has no media type and no file name. It
+is created once, through a temporary file and a rename, and is not
+rewritten. Removing a channel removes its blobs. A blob stays when the
+seat that uploaded it leaves the channel or the server, unless that
+seat owned the channel. A damaged `channel.json` or log is left out of
+the channel list and does not stop the server or any other channel;
+requests for that channel itself fail. A damaged blob fails only that
+blob. A seat's list loads only the logs of channels that seat owns or
+belongs to. The index of a log keeps no entry body. A line that changes
+after it was indexed fails a read of that channel. A log file is not
+held open between calls, and neither is a blob file. The server that
+holds `server.lock` is the only writer of a channel log. New directories
+are mode `0700` and new files are mode `0600`.
 
-Limits are constants. An entry body is at most 4 MiB, a request is at
-most 16 MiB and a log is at most 256 MiB. An owner has at most 1000
-channels and a channel has at most 200 members. A read returns at most
-256 entries and at most 16 MiB of bodies, and at least one entry when
-one exists. There is no flag for any of these.
+Limits are constants. An entry body is at most 4 MiB, a JSON request is
+at most 16 MiB and a log is at most 256 MiB. A blob is at most 4 MiB of
+raw bytes. A longer upload is rejected after at most 4 MiB plus one
+byte. A channel holds at most 4096 blobs and at most 256 MiB of blob
+bytes. An owner has at most 1000 channels and a channel has at most 200
+members. A read returns at most 256 entries and at most 16 MiB of
+bodies, and at least one entry when one exists. There is no flag for
+any of these.
 
 `revoke` removes the seat. A running server drops that seat's channels
 and memberships before it handles the next request. If that cleanup
