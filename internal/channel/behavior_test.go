@@ -591,6 +591,42 @@ func TestListAndGetIsolateMetaAndCommentDamage(t *testing.T) {
 	}
 }
 
+func TestListReturnsAReadErrorAndSkipsDamage(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
+	owner, other := id(0x11), id(0x22)
+	if _, _, err := s.Put(owner, "chat", "kept"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(other, "chat", "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if err := os.WriteFile(filepath.Join(dir, "channels", other, "chat", metaName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir, Options{})
+	saveSeams(t)
+	blocked := filepath.Join(dir, "channels", owner, "chat", metaName)
+	openMeta = func(path string) (*os.File, error) {
+		if path == blocked {
+			return nil, errors.New("meta blocked")
+		}
+		return os.Open(path)
+	}
+	if _, err := s.List(); err == nil || !strings.Contains(err.Error(), "meta blocked") || errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+	openMeta = os.Open
+	list, err := s.List()
+	if err != nil || len(list) != 1 || list[0].Owner != owner || list[0].Chat != "chat" || list[0].Title != "kept" {
+		t.Fatalf("skip %+v %v", list, err)
+	}
+	if _, err := s.Get(other, "chat"); !errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+}
+
 func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
 	owner, other := id(0x11), id(0x22)
 	member := id(0x33)
