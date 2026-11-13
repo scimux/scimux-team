@@ -65,19 +65,21 @@ var readBodyLimit = maxReadBodyBytes
 // Filesystem seams. Tests replace one to force a failure a healthy
 // directory will not produce, including when the test runs as root.
 var (
-	mkdirAll     = os.MkdirAll
-	chmodPath    = os.Chmod
-	readDir      = os.ReadDir
-	removeAll    = os.RemoveAll
-	openMeta     = os.Open
-	createTemp   = os.CreateTemp
-	chmodFile    = func(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
-	writeFile    = func(f *os.File, p []byte) (int, error) { return f.Write(p) }
-	syncFile     = func(f *os.File) error { return f.Sync() }
-	closeFile    = func(f *os.File) error { return f.Close() }
-	renameFile   = os.Rename
-	openJournal  = journal.Open
-	marshalValue = func(v any) ([]byte, error) {
+	mkdirAll      = os.MkdirAll
+	chmodPath     = os.Chmod
+	readDir       = os.ReadDir
+	removeAll     = os.RemoveAll
+	openMeta      = os.Open
+	createTemp    = os.CreateTemp
+	chmodFile     = func(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
+	writeFile     = func(f *os.File, p []byte) (int, error) { return f.Write(p) }
+	syncFile      = func(f *os.File) error { return f.Sync() }
+	closeFile     = func(f *os.File) error { return f.Close() }
+	renameFile    = os.Rename
+	openJournal   = journal.Open
+	openJournalAt = journal.OpenAt
+	closeJournal  = func(f *journal.File) error { return f.Close() }
+	marshalValue  = func(v any) ([]byte, error) {
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)

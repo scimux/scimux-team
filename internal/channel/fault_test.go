@@ -519,3 +519,219 @@ func TestAppendMarshalFailureStoresNothing(t *testing.T) {
 		t.Fatal(err, last)
 	}
 }
+
+func TestStoreCallsLeaveNoLogOpen(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(32))})
+	saveSeams(t)
+	var n int
+	type reopen struct {
+		path string
+		off  int64
+	}
+	var opened []reopen
+	openJournal = func(path string) (*journal.File, error) {
+		f, err := journal.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		n++
+		return f, nil
+	}
+	openJournalAt = func(path string, offset int64) (*journal.File, error) {
+		f, err := journal.OpenAt(path, offset)
+		if err != nil {
+			return nil, err
+		}
+		n++
+		opened = append(opened, reopen{path, offset})
+		return f, nil
+	}
+	closeJournal = func(f *journal.File) error {
+		n--
+		return f.Close()
+	}
+	check := func() {
+		t.Helper()
+		if n != 0 {
+			t.Fatalf("open logs %d", n)
+		}
+	}
+
+	owner, other := id(0x11), id(0x22)
+	if _, _, err := s.Put(owner, "bad name", "t"); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if _, err := s.Get("nope", "chat"); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if _, _, _, err := s.Read(owner, "", Mirror, 0); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if _, _, err := s.Append(owner, "chat", Mirror, "nope", []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if _, err := s.SetMembers(owner, "chat", []Member{{Seat: owner, Access: "read"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if err := s.Delete("nope", "chat"); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+	if err := s.Reconcile(nil); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	check()
+
+	if _, created, err := s.Put(owner, "chat", "feat"); err != nil || !created {
+		t.Fatal(err, created)
+	}
+	check()
+	if _, err := s.Get(owner, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	check()
+	info, err := s.Get(owner, "chat")
+	if err != nil || info.Title != "feat" || info.MirrorLast != 0 {
+		t.Fatalf("%+v %v", info, err)
+	}
+	check()
+	list, err := s.List(owner)
+	if err != nil || len(list) != 1 || list[0].Chat != "chat" {
+		t.Fatalf("%+v %v", list, err)
+	}
+	check()
+	before := len(opened)
+	if stranger, err := s.List(id(0x33)); err != nil || len(stranger) != 0 || len(opened) != before {
+		t.Fatalf("stranger %+v opened %d %v", stranger, len(opened)-before, err)
+	}
+	check()
+	if _, _, err := s.Append(owner, "missing", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	check()
+	if _, last, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"a":1}`)}}); err != nil || last != 1 {
+		t.Fatal(err, last)
+	}
+	check()
+	dup, last, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"a":9}`)}})
+	if err != nil || last != 1 || len(dup) != 1 || !dup[0].Duplicate || dup[0].Seq != 1 {
+		t.Fatalf("dup %+v %d %v", dup, last, err)
+	}
+	check()
+	if _, last, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "m", Body: json.RawMessage(`2`)}}); err != nil || last != 2 {
+		t.Fatal(err, last)
+	}
+	check()
+	entries, last, more, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || more || last != 2 || len(entries) != 2 || string(entries[0].Body) != `{"a":1}` || entries[1].Seq != 2 {
+		t.Fatalf("read %+v %v", entries, err)
+	}
+	check()
+	mirror := filepath.Join(dir, "channels", owner, "chat", mirrorName)
+	var reopened int64 = -1
+	for _, o := range opened {
+		if o.path == mirror {
+			reopened = o.off
+		}
+	}
+	if reopened != int64(len(fileBytes(t, mirror))) {
+		t.Fatalf("reopen %d file %d", reopened, len(fileBytes(t, mirror)))
+	}
+	if _, err := s.SetMembers(owner, "chat", []Member{{Seat: other, Access: "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if seen, err := s.List(other); err != nil || len(seen) != 1 || seen[0].Owner != owner {
+		t.Fatalf("member %+v %v", seen, err)
+	}
+	check()
+
+	tight := openStore(t, t.TempDir(), Options{Entropy: bytes.NewReader(seqBytes(8)), MaxLogBytes: 1})
+	if _, _, err := tight.Put(owner, "chat", "feat"); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if _, _, err := tight.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); !errors.Is(err, ErrQuota) {
+		t.Fatal(err)
+	}
+	check()
+
+	blocked := openStore(t, t.TempDir(), Options{Entropy: bytes.NewReader(seqBytes(8))})
+	realOpen := openJournal
+	openJournal = func(path string) (*journal.File, error) {
+		if strings.HasSuffix(path, commentsName) {
+			return nil, errors.New("comments blocked")
+		}
+		return realOpen(path)
+	}
+	if _, _, err := blocked.Put(owner, "chat", "feat"); err == nil || !strings.Contains(err.Error(), "comments blocked") {
+		t.Fatal(err)
+	}
+	check()
+	openJournal = realOpen
+
+	original := fileBytes(t, mirror)
+	planted := bytes.Replace(original, []byte(`{"a":1}`), []byte(`{"a":9}`), 1)
+	if bytes.Equal(planted, original) {
+		t.Fatal("plant failed")
+	}
+	if err := os.WriteFile(mirror, planted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+	check()
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+	check()
+
+	if err := s.Delete(owner, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	check()
+	removeAll = func(string) error { return errors.New("remove blocked") }
+	if err := s.Delete(owner, "chat"); err == nil || !strings.Contains(err.Error(), "remove blocked") {
+		t.Fatal(err)
+	}
+	check()
+	removeAll = os.RemoveAll
+	if err := s.Delete(owner, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	check()
+
+	if _, _, err := s.Put(other, "chat", "theirs"); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	s.Close()
+	check()
+	s = openStore(t, dir, Options{})
+	openMeta = func(string) (*os.File, error) { return nil, errors.New("meta blocked") }
+	if _, err := s.List(other); err == nil || !strings.Contains(err.Error(), "meta blocked") {
+		t.Fatal(err)
+	}
+	check()
+	openMeta = os.Open
+	if err := s.Reconcile(func(id string) bool { return id == owner }); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if _, err := s.Get(other, "chat"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	check()
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	check()
+}

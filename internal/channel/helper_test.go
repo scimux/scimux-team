@@ -139,6 +139,7 @@ func saveSeams(t *testing.T) {
 		mkdirAll: mkdirAll, chmodPath: chmodPath, readDir: readDir, removeAll: removeAll,
 		openMeta: openMeta, createTemp: createTemp, chmodFile: chmodFile, writeFile: writeFile,
 		syncFile: syncFile, closeFile: closeFile, renameFile: renameFile, openJournal: openJournal,
+		openJournalAt: openJournalAt, closeJournal: closeJournal,
 		marshalValue: marshalValue, readFull: readFull, syncDir: syncDir, syncDirFile: syncDirFile,
 		beforeLogUpdate: beforeLogUpdate,
 	}
@@ -156,6 +157,8 @@ func saveSeams(t *testing.T) {
 		closeFile = prev.closeFile
 		renameFile = prev.renameFile
 		openJournal = prev.openJournal
+		openJournalAt = prev.openJournalAt
+		closeJournal = prev.closeJournal
 		marshalValue = prev.marshalValue
 		readFull = prev.readFull
 		syncDir = prev.syncDir
@@ -177,6 +180,8 @@ type seams struct {
 	closeFile       func(*os.File) error
 	renameFile      func(string, string) error
 	openJournal     func(string) (*journal.File, error)
+	openJournalAt   func(string, int64) (*journal.File, error)
+	closeJournal    func(*journal.File) error
 	marshalValue    func(any) ([]byte, error)
 	readFull        func(io.Reader) ([]byte, error)
 	syncDir         func(string) error
