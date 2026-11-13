@@ -258,7 +258,7 @@ func TestChangedLineFailsOnlyThatChannel(t *testing.T) {
 	if err := os.WriteFile(mirror, planted, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "n") {
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), `{"n"`) {
 		t.Fatal(err)
 	}
 	entries, last, _, err := s.Read(other, "chat", Mirror, 0)
@@ -293,7 +293,7 @@ func TestUnreadableIndexedLineIsNotDamage(t *testing.T) {
 	if err := os.WriteFile(mirror, torn, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); err == nil || errors.Is(err, errDamaged) || strings.Contains(err.Error(), "n") {
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); err == nil || errors.Is(err, errDamaged) || strings.Contains(err.Error(), `{"n"`) {
 		t.Fatal(err)
 	}
 	entries, _, _, err := s.Read(other, "chat", Mirror, 0)
