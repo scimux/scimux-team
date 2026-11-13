@@ -411,12 +411,47 @@ func (r *Registry) Revoke(key string) (Code, error) {
 // RevokeSeat ends the active seat with that installation ID. Unlike
 // Revoke it never treats id as a code ID.
 func (r *Registry) RevokeSeat(id string) (Code, error) {
-	return Code{}, nil
+	var row Code
+	_, err := r.update(false, func() ([][]byte, error) {
+		c := r.activeBySeat[id]
+		if c == nil {
+			return nil, ErrUnknown
+		}
+		row = r.row(c)
+		row.State = "revoked"
+		return oneRecord(record{Type: "revoke", TS: r.stamp(), ID: c.id})
+	})
+	if err != nil {
+		return Code{}, err
+	}
+	return row, nil
 }
 
 // Rename changes the name of the active seat with that installation ID.
+// A name the protocol rejects is ErrInvalid. An ID that is not an active
+// seat is ErrUnknown. Both append nothing. Renaming to the current name
+// succeeds and appends nothing.
 func (r *Registry) Rename(id, name string) (Seat, error) {
-	return Seat{}, nil
+	var seat Seat
+	_, err := r.update(false, func() ([][]byte, error) {
+		if !validName(name) {
+			return nil, ErrInvalid
+		}
+		c := r.activeBySeat[id]
+		if c == nil {
+			return nil, ErrUnknown
+		}
+		seat = seatOf(c)
+		if c.name == name {
+			return nil, nil
+		}
+		seat.Name = name
+		return oneRecord(record{Type: "name", TS: r.stamp(), ID: c.id, Name: name})
+	})
+	if err != nil {
+		return Seat{}, err
+	}
+	return seat, nil
 }
 
 // Register binds an unused code to one installation and returns a new token.
@@ -554,6 +589,8 @@ func (r *Registry) apply(_ int64, line []byte) error {
 		return r.applyBind(rec, ts)
 	case "revoke":
 		return r.applyRevoke(rec)
+	case "name":
+		return r.applyName(rec)
 	default:
 		return errUnknownType
 	}
@@ -653,6 +690,26 @@ func (r *Registry) applyRevoke(rec record) error {
 		}
 	}
 	c.revoked = true
+	return nil
+}
+
+// applyName requires a redeemed code that is not revoked, a valid name and
+// no other field. Anything else damages the journal.
+func (r *Registry) applyName(rec record) error {
+	if r.serverID == "" {
+		return errBefore
+	}
+	if !goodHex(rec.ID, 16) || !validName(rec.Name) || rec.Verifier != "" || rec.Expires != "" || rec.Seat != "" || rec.TokenSHA != "" {
+		return errMalformed
+	}
+	c := r.byID[rec.ID]
+	if c == nil {
+		return errNoCode
+	}
+	if c.revoked || c.seat == "" {
+		return errMalformed
+	}
+	c.name = rec.Name
 	return nil
 }
 
