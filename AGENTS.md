@@ -71,8 +71,11 @@ go run ./tools/covercheck
   damaged `channel.json` or a damaged log is a hard error for that
   channel. `List` leaves it out, and `Reconcile` does not fail on it.
   `Reconcile` still removes a damaged channel whose owner is not active.
-  The server starts with damaged channels on disk. New directories are
-  mode `0700` and new files are mode `0600`.
+  The server starts with damaged channels on disk. A seat's list loads
+  only the logs of channels that seat owns or belongs to. The index of a
+  log keeps no entry body. A line that changes after it was indexed fails
+  a read of that channel. New directories are mode `0700` and new files
+  are mode `0600`.
 - Limits are constants: 4 MiB per entry body, 16 MiB per request, 256
   MiB per log, 1000 channels per owner and 200 members. A read returns
   at most 256 entries and at most 16 MiB of bodies, and at least one

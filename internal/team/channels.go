@@ -91,11 +91,7 @@ func (s *server) listChannels(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		for _, info := range all {
-			acc := accessOf(g.seat.ID, info)
-			if acc == accessNone {
-				continue
-			}
-			views = append(views, channelViewOf(info, accessName(acc)))
+			views = append(views, channelViewOf(info, accessName(accessOf(g.seat.ID, info))))
 		}
 		return nil
 	})

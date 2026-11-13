@@ -9,9 +9,11 @@
 // a temporary file in the same directory and renaming it into place. The
 // logs are journals: a torn tail is discarded on the next append, and a
 // damaged complete line is a hard error for that channel alone. List leaves
-// a damaged channel out. Reconcile still removes one whose owner is not
-// active, and leaves a damaged channel of an active owner in place without
-// reporting an error.
+// a damaged channel out and loads logs only for channels the seat owns or
+// belongs to. The index of a log keeps no entry body. A line that changes
+// after it was indexed fails a read of that channel. Reconcile still
+// removes a channel whose owner is not active, and leaves a damaged
+// channel of an active owner in place without reporting an error.
 package channel
 
 import (
@@ -343,7 +345,8 @@ func (s *Store) Get(owner, chatID string) (Info, error) {
 }
 
 // List returns the channels seat owns or belongs to, ordered by owner and
-// then chat. The seat is ignored until the list is limited to that seat.
+// then chat. It loads the logs of those channels only. A damaged channel
+// is left out. Any other failure to read one is returned.
 func (s *Store) List(seat string) ([]Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -360,7 +363,18 @@ func (s *Store) List(seat string) ([]Info, error) {
 	sort.Strings(keys)
 	out := make([]Info, 0, len(keys))
 	for _, k := range keys {
-		info, err := s.loaded(s.byKey[k])
+		ch := s.byKey[k]
+		m, err := s.loadMeta(ch)
+		if errors.Is(err, errDamaged) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !visibleTo(seat, ch, m) {
+			continue
+		}
+		info, err := s.loaded(ch)
 		if errors.Is(err, errDamaged) {
 			continue
 		}
@@ -370,6 +384,19 @@ func (s *Store) List(seat string) ([]Info, error) {
 		out = append(out, info)
 	}
 	return out, nil
+}
+
+// visibleTo reports whether seat owns the channel or is one of its members.
+func visibleTo(seat string, ch *chat, m *metaFile) bool {
+	if seat == ch.owner {
+		return true
+	}
+	for _, mem := range m.Members {
+		if mem.Seat == seat {
+			return true
+		}
+	}
+	return false
 }
 
 // Delete removes the channel directory. A later Put starts a new generation.

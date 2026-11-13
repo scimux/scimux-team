@@ -57,8 +57,10 @@ channel, `channels/<owner>/<chat>/`. That directory contains
 replaced through a temporary file and a rename. The two logs are
 append-only. A damaged `channel.json` or log is left out of the channel
 list and does not stop the server or any other channel; requests for
-that channel itself fail. New directories are mode `0700` and new files
-are mode `0600`.
+that channel itself fail. A seat's list loads only the logs of channels
+that seat owns or belongs to. The index of a log keeps no entry body.
+A line that changes after it was indexed fails a read of that channel.
+New directories are mode `0700` and new files are mode `0600`.
 
 Limits are constants. An entry body is at most 4 MiB, a request is at
 most 16 MiB and a log is at most 256 MiB. An owner has at most 1000

@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"io"
 
 	"github.com/scimux/scimux-team/internal/journal"
 )
 
 // logState is one channel log. The index is built on first use and then
-// extended by Refresh, so a line is parsed once.
+// extended by Refresh, so a line is parsed once. It keeps no entry body.
+// Read loads the line from the file.
 type logState struct {
 	path  string
 	kind  Log
@@ -22,12 +24,14 @@ type logState struct {
 	bad   error
 }
 
+// indexEntry is one indexed line. bodyN is the stored body length, which
+// is what the read cap counts. sum is the line without its newline, so a
+// later change fails the read.
 type indexEntry struct {
-	seq    uint64
-	key    string
-	author string
-	at     string
-	body   json.RawMessage
+	seq   uint64
+	off   int64
+	bodyN int
+	sum   uint64
 }
 
 func newLog(path string, kind Log) *logState {
@@ -141,18 +145,27 @@ func (s *Store) Read(owner, chatID string, kind Log, after uint64) ([]Entry, uin
 			more = true
 			break
 		}
-		if len(out) > 0 && sum+len(ix.body) > readBodyLimit {
+		if len(out) > 0 && sum+ix.bodyN > readBodyLimit {
 			more = true
 			break
 		}
+		line, err := lg.j.ReadLine(ix.off)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		e, parseErr := parseEntry(line)
+		if parseErr != nil || lineSum(line) != ix.sum || e.Seq != ix.seq || len(e.Body) != ix.bodyN {
+			lg.bad = errDamaged
+			return nil, 0, false, errDamaged
+		}
 		out = append(out, Entry{
-			Seq:    ix.seq,
-			Key:    ix.key,
-			Author: ix.author,
-			At:     ix.at,
-			Body:   append(json.RawMessage(nil), ix.body...),
+			Seq:    e.Seq,
+			Key:    e.Key,
+			Author: e.Author,
+			At:     e.At,
+			Body:   append(json.RawMessage(nil), e.Body...),
 		})
-		sum += len(ix.body)
+		sum += ix.bodyN
 	}
 	return out, lg.last, more, nil
 }
@@ -195,15 +208,20 @@ func (lg *logState) absorb(off int64, line []byte) error {
 	}
 	lg.byKey[k] = e.Seq
 	lg.idx = append(lg.idx, indexEntry{
-		seq:    e.Seq,
-		key:    e.Key,
-		author: e.Author,
-		at:     e.At,
-		body:   append(json.RawMessage(nil), e.Body...),
+		seq:   e.Seq,
+		off:   off,
+		bodyN: len(e.Body),
+		sum:   lineSum(line),
 	})
 	lg.last = e.Seq
 	lg.size = off + int64(len(line)) + 1
 	return nil
+}
+
+func lineSum(line []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(line)
+	return h.Sum64()
 }
 
 func (lg *logState) prepare(author string, entries []NewEntry, at string, maxBytes int64) ([][]byte, []Result, error) {
