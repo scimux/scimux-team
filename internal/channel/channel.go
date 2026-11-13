@@ -118,9 +118,29 @@ func ReplaceLogOpeners(open func(string) (*journal.File, error), openAt func(str
 	}
 }
 
-// Meta is the channel record used to decide who can see a channel.
+// Meta reads channel.json and does not open either log. The sequence
+// numbers in the result are zero. A directory without channel.json is
+// ErrNotFound. A damaged channel.json is the same error Get returns.
 func (s *Store) Meta(owner, chatID string) (Info, error) {
-	return s.Get(owner, chatID)
+	if !validOwner(owner) || !validChat(chatID) {
+		return Info{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.usable(); err != nil {
+		return Info{}, err
+	}
+	if err := s.scan(); err != nil {
+		return Info{}, err
+	}
+	ch := s.byKey[chatKey(owner, chatID)]
+	if ch == nil {
+		return Info{}, ErrNotFound
+	}
+	if _, err := s.loadMeta(ch); err != nil {
+		return Info{}, err
+	}
+	return s.info(ch), nil
 }
 
 // syncDir pushes a directory entry to disk after a rename. The rename is

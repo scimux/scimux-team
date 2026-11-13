@@ -284,7 +284,8 @@ func (s *server) gate(r *http.Request, owner, chat string, need int, allowCreate
 	if !validID(owner) || !validChatID(chat) {
 		return gateResult{}, channel.ErrInvalid
 	}
-	info, err := s.channels.Get(owner, chat)
+	// Who can see the channel is decided from channel.json alone.
+	info, err := s.channels.Meta(owner, chat)
 	if errors.Is(err, channel.ErrNotFound) {
 		if allowCreate && seat.ID == owner {
 			return gateResult{seat: seat}, nil
@@ -292,16 +293,25 @@ func (s *server) gate(r *http.Request, owner, chat string, need int, allowCreate
 		return gateResult{}, errNotFound
 	}
 	if err != nil {
-		return gateResult{}, err
+		// The member list is unknown. Only the path owner learns that
+		// the record is damaged.
+		if seat.ID == owner {
+			return gateResult{}, err
+		}
+		return gateResult{}, errNotFound
 	}
 	acc := accessOf(seat.ID, info)
 	if acc == accessNone {
 		return gateResult{}, errNotFound
 	}
+	loaded, err := s.channels.Get(owner, chat)
+	if err != nil {
+		return gateResult{}, err
+	}
 	if acc < need {
 		return gateResult{}, errForbidden
 	}
-	return gateResult{seat: seat, info: info}, nil
+	return gateResult{seat: seat, info: loaded}, nil
 }
 
 func accessOf(id string, info channel.Info) int {

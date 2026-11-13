@@ -65,9 +65,13 @@ go run ./tools/covercheck
   this server does not list answers `404` with `{"error":"not_found"}`.
   `GET` patterns also match `HEAD`; those handlers answer `404` for
   `HEAD`.
-- Access is decided in one function. The caller is the owner, a write
+- Access is decided in one function, from `channel.json` alone. No log
+  is opened before that decision. The caller is the owner, a write
   member, a read member, or a stranger. A stranger and a missing channel
-  share that same `404` body. `PUT` or `DELETE` on a channel under
+  share that same `404` body, whatever state the logs are in. When
+  `channel.json` itself is damaged, the path owner gets `500` and every
+  other seat gets that `404`. An owner or a member still gets `500` for
+  a damaged log. `PUT` or `DELETE` on a channel under
   another seat's id is `403` for a member and `404` for a stranger.
   `DELETE` on `.../membership` is `204` for a member and `403` for the
   owner. The channel object carries `members` only for the owner.
