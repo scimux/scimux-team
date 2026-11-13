@@ -408,6 +408,17 @@ func (r *Registry) Revoke(key string) (Code, error) {
 	return row, nil
 }
 
+// RevokeSeat ends the active seat with that installation ID. Unlike
+// Revoke it never treats id as a code ID.
+func (r *Registry) RevokeSeat(id string) (Code, error) {
+	return Code{}, nil
+}
+
+// Rename changes the name of the active seat with that installation ID.
+func (r *Registry) Rename(id, name string) (Seat, error) {
+	return Seat{}, nil
+}
+
 // Register binds an unused code to one installation and returns a new token.
 // Checks run in order: the code parses and is unused, else ErrJoinRefused;
 // the installation ID and the name follow the protocol, else ErrInvalid;

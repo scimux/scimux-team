@@ -1364,6 +1364,302 @@ func TestCorruptTailSticks(t *testing.T) {
 	}
 }
 
+func TestRevokeSeat(t *testing.T) {
+	dir := t.TempDir()
+	r := openReg(t, dir, Options{Now: fixed(tsEarly), Entropy: &countReader{}})
+	other := openReg(t, dir, Options{Now: fixed(tsEarly), Entropy: &countReader{n: 200}})
+	token, codeID := registerSeat(t, r, inst(0x11), "seat a")
+	before := fileBytes(t, r)
+	if _, err := r.RevokeSeat(inst(0x99)); !errors.Is(err, ErrUnknown) || !bytes.Equal(fileBytes(t, r), before) {
+		t.Fatalf("unknown %v", err)
+	}
+	if _, err := r.RevokeSeat("not-a-seat"); !errors.Is(err, ErrUnknown) || !bytes.Equal(fileBytes(t, r), before) {
+		t.Fatalf("garbage %v", err)
+	}
+	// A code ID that is not itself a seat is unknown, and the code stays unused.
+	unused, unusedRow, err := r.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unusedBefore := fileBytes(t, r)
+	if _, err := r.RevokeSeat(unusedRow.ID); !errors.Is(err, ErrUnknown) || !bytes.Equal(fileBytes(t, r), unusedBefore) {
+		t.Fatalf("code id %v", err)
+	}
+	if stateOf(t, r, unusedRow.ID) != "unused" {
+		t.Fatal(stateOf(t, r, unusedRow.ID))
+	}
+	if _, _, err := r.Register(unused, inst(0x12), "seat c"); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Count(string(fileBytes(t, r)), "\n")
+	row, err := r.RevokeSeat(inst(0x11))
+	if err != nil || row.ID != codeID || row.State != "revoked" || row.Seat != inst(0x11) || row.Name != "seat a" {
+		t.Fatalf("revoke seat %+v %v", row, err)
+	}
+	if strings.Count(string(fileBytes(t, r)), "\n") != lines+1 {
+		t.Fatal("revoke seat did not append one record")
+	}
+	last := lastJournalRecord(t, r)
+	if last.Type != "revoke" || last.ID != codeID || last.TS != tsEarly || last.Name != "" || last.Seat != "" || last.Verifier != "" || last.TokenSHA != "" || last.Expires != "" {
+		t.Fatalf("record %+v", last)
+	}
+	raw := lastJournalLine(t, r)
+	if bytes.Contains(raw, []byte(`"seat"`)) || bytes.Contains(raw, []byte(`"name"`)) {
+		t.Fatalf("revoke record %s", raw)
+	}
+	if _, ok := r.Seat(inst(0x11)); ok || len(r.Seats()) != 1 {
+		t.Fatalf("seats %+v", r.Seats())
+	}
+	if _, ok := r.Authenticate(token); ok {
+		t.Fatal("token survived")
+	}
+	if stateOf(t, r, codeID) != "revoked" {
+		t.Fatal(stateOf(t, r, codeID))
+	}
+	againBefore := fileBytes(t, r)
+	if _, err := r.RevokeSeat(inst(0x11)); !errors.Is(err, ErrUnknown) || !bytes.Equal(fileBytes(t, r), againBefore) {
+		t.Fatalf("already revoked %v", err)
+	}
+
+	reported, err := other.Refresh()
+	if err != nil || len(reported) != 1 || reported[0] != inst(0x11) {
+		t.Fatalf("refresh %v %v", reported, err)
+	}
+	if _, ok := other.Seat(inst(0x11)); ok {
+		t.Fatal("second registry still has the seat")
+	}
+	if _, ok := other.Authenticate(token); ok {
+		t.Fatal("second registry accepted the token")
+	}
+	found := false
+	for _, code := range other.List() {
+		if code.ID == codeID && code.State == "revoked" && code.Seat == inst(0x11) && code.Name == "seat a" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("second list %+v", other.List())
+	}
+}
+
+func TestRevokeSeatIgnoresACodeWithTheSameID(t *testing.T) {
+	r := openReg(t, "", Options{Now: fixed(tsEarly), Entropy: &countReader{}})
+	_, codeRow, err := r.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seatCode, seatRow, err := r.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := r.Register(seatCode, codeRow.ID, "seat b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := r.RevokeSeat(codeRow.ID)
+	if err != nil || row.ID != seatRow.ID || row.State != "revoked" || row.Seat != codeRow.ID || row.Name != "seat b" {
+		t.Fatalf("revoked %+v %v", row, err)
+	}
+	if stateOf(t, r, codeRow.ID) != "unused" {
+		t.Fatalf("code %s was revoked", stateOf(t, r, codeRow.ID))
+	}
+	if stateOf(t, r, seatRow.ID) != "revoked" {
+		t.Fatalf("seat code %s", stateOf(t, r, seatRow.ID))
+	}
+	if _, ok := r.Seat(codeRow.ID); ok {
+		t.Fatal("seat remains")
+	}
+	if _, ok := r.Authenticate(token); ok {
+		t.Fatal("token survived")
+	}
+	last := lastJournalRecord(t, r)
+	if last.Type != "revoke" || last.ID != seatRow.ID {
+		t.Fatalf("record %+v", last)
+	}
+}
+
+func TestRename(t *testing.T) {
+	dir := t.TempDir()
+	r := openReg(t, dir, Options{Now: fixed(tsEarly), Entropy: &countReader{}})
+	token, codeID := registerSeat(t, r, inst(0x11), "seat a")
+	registered := r.Seats()[0].Registered
+	before := fileBytes(t, r)
+	if _, err := r.Rename(inst(0x99), "seat b"); !errors.Is(err, ErrUnknown) || !bytes.Equal(fileBytes(t, r), before) {
+		t.Fatalf("unknown %v", err)
+	}
+	if _, err := r.Rename(inst(0x99), " a"); !errors.Is(err, ErrInvalid) || !bytes.Equal(fileBytes(t, r), before) {
+		t.Fatalf("bad name wins %v", err)
+	}
+	bad := []struct{ label, name string }{
+		{"empty", ""},
+		{"leading space", " a"},
+		{"trailing space", "a "},
+		{"65 bytes", strings.Repeat("b", 65)},
+		{"newline", "a\nb"},
+		{"tab", "a\tb"},
+		{"escape", "a\x1bb"},
+		{"delete", "a\x7fb"},
+		{"invalid utf-8", "\xff"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.label, func(t *testing.T) {
+			kept := fileBytes(t, r)
+			if _, err := r.Rename(inst(0x11), tc.name); !errors.Is(err, ErrInvalid) || !bytes.Equal(fileBytes(t, r), kept) {
+				t.Fatalf("%s %v", tc.label, err)
+			}
+			if got, ok := r.Seat(inst(0x11)); !ok || got.Name != "seat a" {
+				t.Fatalf("name changed %+v", got)
+			}
+		})
+	}
+	lines := strings.Count(string(fileBytes(t, r)), "\n")
+	same, err := r.Rename(inst(0x11), "seat a")
+	if err != nil || same.ID != inst(0x11) || same.Name != "seat a" || !same.Registered.Equal(registered) {
+		t.Fatalf("same %+v %v", same, err)
+	}
+	if strings.Count(string(fileBytes(t, r)), "\n") != lines || strings.Contains(string(fileBytes(t, r)), `"type":"name"`) {
+		t.Fatal("same name appended")
+	}
+
+	got, err := r.Rename(inst(0x11), "seat b")
+	if err != nil || got.ID != inst(0x11) || got.Name != "seat b" || !got.Registered.Equal(registered) {
+		t.Fatalf("rename %+v %v", got, err)
+	}
+	last := lastJournalRecord(t, r)
+	if last.Type != "name" || last.ID != codeID || last.Name != "seat b" || last.TS != tsEarly || last.Seat != "" || last.Verifier != "" || last.TokenSHA != "" || last.Expires != "" {
+		t.Fatalf("record %+v", last)
+	}
+	if strings.Count(string(fileBytes(t, r)), `"type":"name"`) != 1 {
+		t.Fatalf("journal %s", fileBytes(t, r))
+	}
+	seat, ok := r.Seat(inst(0x11))
+	if !ok || seat.Name != "seat b" || !seat.Registered.Equal(registered) {
+		t.Fatalf("seat %+v %v", seat, ok)
+	}
+	seats := r.Seats()
+	if len(seats) != 1 || seats[0].ID != inst(0x11) || seats[0].Name != "seat b" {
+		t.Fatalf("seats %+v", seats)
+	}
+	authed, ok := r.Authenticate(token)
+	if !ok || authed.Name != "seat b" || authed.ID != inst(0x11) {
+		t.Fatalf("token %+v %v", authed, ok)
+	}
+	var listed Code
+	for _, row := range r.List() {
+		if row.ID == codeID {
+			listed = row
+		}
+	}
+	if listed.Name != "seat b" || listed.State != "redeemed" || listed.Seat != inst(0x11) {
+		t.Fatalf("list %+v", listed)
+	}
+	wide, err := r.Rename(inst(0x11), strings.Repeat("c", 64))
+	if err != nil || wide.Name != strings.Repeat("c", 64) {
+		t.Fatalf("64 bytes %+v %v", wide, err)
+	}
+
+	again := openReg(t, dir, Options{Now: fixed(tsEarly)})
+	seat, ok = again.Seat(inst(0x11))
+	if !ok || seat.Name != strings.Repeat("c", 64) {
+		t.Fatalf("reopen seat %+v %v", seat, ok)
+	}
+	if seats = again.Seats(); len(seats) != 1 || seats[0].Name != strings.Repeat("c", 64) {
+		t.Fatalf("reopen seats %+v", seats)
+	}
+	authed, ok = again.Authenticate(token)
+	if !ok || authed.Name != strings.Repeat("c", 64) {
+		t.Fatalf("reopen token %+v %v", authed, ok)
+	}
+	found := false
+	for _, row := range again.List() {
+		if row.ID == codeID && row.Name == strings.Repeat("c", 64) && row.State == "redeemed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reopen list %+v", again.List())
+	}
+}
+
+func TestRenameSeesARevokeFromAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	a := openReg(t, dir, Options{Now: fixed(tsEarly), Entropy: &countReader{n: 1}})
+	b := openReg(t, dir, Options{Now: fixed(tsEarly), Entropy: &countReader{n: 200}})
+	token, _ := registerSeat(t, a, inst(0x22), "seat b")
+	if _, err := b.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Revoke(inst(0x22)); err != nil {
+		t.Fatal(err)
+	}
+	before := fileBytes(t, a)
+	if _, err := a.Rename(inst(0x22), "renamed"); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("rename %v", err)
+	}
+	if !bytes.Equal(fileBytes(t, a), before) || strings.Contains(string(fileBytes(t, a)), `"type":"name"`) {
+		t.Fatal("rename appended after the revoke")
+	}
+	if _, ok := a.Seat(inst(0x22)); ok {
+		t.Fatal("seat survived")
+	}
+	if _, ok := a.Authenticate(token); ok {
+		t.Fatal("token survived")
+	}
+}
+
+func TestNameRecordReplay(t *testing.T) {
+	_, id, ver := codeParts(t, 0x51)
+	_, otherID, _ := codeParts(t, 0x52)
+	seat := inst(0x11)
+	hash := strings.Repeat("ab", 32)
+	base := jl(t, serverMap()) + jl(t, issueMap(id, ver, tsEarly, expFar))
+	bind := jl(t, map[string]any{
+		"type": "bind", "ts": tsMid, "id": id, "seat": seat, "name": "seat a", "token_sha256": hash,
+	})
+	t.Run("accepted", func(t *testing.T) {
+		r := openReg(t, writeJournal(t, base+bind+jl(t, map[string]any{"type": "name", "ts": tsMid, "id": id, "name": "seat b"})), Options{Now: fixed(tsEarly)})
+		got, ok := r.Seat(seat)
+		if !ok || got.Name != "seat b" {
+			t.Fatalf("replay %+v %v", got, ok)
+		}
+		if seats := r.Seats(); len(seats) != 1 || seats[0].Name != "seat b" {
+			t.Fatalf("seats %+v", seats)
+		}
+		found := false
+		for _, row := range r.List() {
+			if row.ID == id && row.Name == "seat b" && row.State == "redeemed" && row.Seat == seat {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("list %+v", r.List())
+		}
+	})
+
+	cases := []struct {
+		name string
+		body string
+		want error
+	}{
+		{"before server", jl(t, map[string]any{"type": "name", "ts": tsEarly, "id": id, "name": "seat b"}), errBefore},
+		{"unknown code", base + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": otherID, "name": "seat b"}), errNoCode},
+		{"unused code", base + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": id, "name": "seat b"}), errMalformed},
+		{"revoked code", base + bind + jl(t, map[string]any{"type": "revoke", "ts": tsMid, "id": id}) + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": id, "name": "seat b"}), errMalformed},
+		{"bad name", base + bind + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": id, "name": " seat"}), errMalformed},
+		{"bad id", base + bind + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": "zz", "name": "seat b"}), errMalformed},
+		{"extra field", base + bind + jl(t, map[string]any{"type": "name", "ts": tsMid, "id": id, "name": "seat b", "verifier": ver}), errMalformed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Open(writeJournal(t, tc.body), Options{Now: fixed(tsEarly), Entropy: bytes.NewReader(bytes.Repeat([]byte{0x01}, 16))})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestNameBoundaries(t *testing.T) {
 	r := openReg(t, "", Options{Now: fixed(tsEarly), Entropy: &countReader{}})
 	code, _, err := r.Issue()
@@ -1519,6 +1815,37 @@ func writeJournal(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func registerSeat(t *testing.T, r *Registry, id, name string) (token, boundCode string) {
+	t.Helper()
+	code, row, err := r.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err = r.Register(code, id, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token, row.ID
+}
+
+func lastJournalLine(t *testing.T, r *Registry) []byte {
+	t.Helper()
+	body := bytes.TrimSuffix(fileBytes(t, r), []byte("\n"))
+	if i := bytes.LastIndexByte(body, '\n'); i >= 0 {
+		return body[i+1:]
+	}
+	return body
+}
+
+func lastJournalRecord(t *testing.T, r *Registry) record {
+	t.Helper()
+	var rec record
+	if err := json.Unmarshal(lastJournalLine(t, r), &rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
 }
 
 func appendRaw(t *testing.T, path, s string) {
