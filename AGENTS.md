@@ -67,8 +67,12 @@ go run ./tools/covercheck
   channel object carries `members` only for the owner.
 - `channel.json` holds the title, the generation, the created time and
   the member list. It is the only file that is rewritten, and only by a
-  temporary file and a rename. The logs are append-only journals. New
-  directories are mode `0700` and new files are mode `0600`.
+  temporary file and a rename. The logs are append-only journals. A
+  damaged `channel.json` or a damaged log is a hard error for that
+  channel. `List` leaves it out, and `Reconcile` does not fail on it.
+  `Reconcile` still removes a damaged channel whose owner is not active.
+  The server starts with damaged channels on disk. New directories are
+  mode `0700` and new files are mode `0600`.
 - Limits are constants: 4 MiB per entry body, 16 MiB per request, 256
   MiB per log, 1000 channels per owner and 200 members. A read returns
   at most 256 entries and at most 16 MiB of bodies, and at least one

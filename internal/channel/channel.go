@@ -8,7 +8,10 @@
 // channel.json is the only file that is ever rewritten, and only by writing
 // a temporary file in the same directory and renaming it into place. The
 // logs are journals: a torn tail is discarded on the next append, and a
-// damaged complete line is a hard error for that channel alone.
+// damaged complete line is a hard error for that channel alone. List leaves
+// a damaged channel out. Reconcile still removes one whose owner is not
+// active, and leaves a damaged channel of an active owner in place without
+// reporting an error.
 package channel
 
 import (
@@ -357,6 +360,9 @@ func (s *Store) List() ([]Info, error) {
 	out := make([]Info, 0, len(keys))
 	for _, k := range keys {
 		info, err := s.loaded(s.byKey[k])
+		if errors.Is(err, errDamaged) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -443,16 +449,12 @@ func (s *Store) Reconcile(active func(id string) bool) error {
 	for _, key := range keys {
 		ch := s.byKey[key]
 		if !active(ch.owner) {
-			if err := s.deleteChat(key, ch); err != nil && first == nil {
-				first = err
-			}
+			remember(&first, s.deleteChat(key, ch))
 			continue
 		}
 		m, err := s.loadMeta(ch)
 		if err != nil {
-			if first == nil {
-				first = err
-			}
+			remember(&first, err)
 			continue
 		}
 		filtered := make([]Member, 0, len(m.Members))
@@ -469,11 +471,22 @@ func (s *Store) Reconcile(active func(id string) bool) error {
 		}
 		next := *m
 		next.Members = filtered
-		if err := s.saveMeta(ch, &next); err != nil && first == nil {
-			first = err
-		}
+		remember(&first, s.saveMeta(ch, &next))
 	}
 	return first
+}
+
+// remember keeps the first error that is not a damaged record. Damage is
+// local to that channel: an inactive owner's damaged channel is removed by
+// the caller before this is used, and an active owner's damaged channel
+// stays where it is.
+func remember(first *error, err error) {
+	if err == nil || errors.Is(err, errDamaged) {
+		return
+	}
+	if *first == nil {
+		*first = err
+	}
 }
 
 func (s *Store) createChat(ch *chat, m *metaFile) error {
