@@ -52,9 +52,9 @@ go run ./tools/covercheck
   A name that breaks the rule is a usage error and the state directory is
   left untouched.
 - A request body is limited to 16 MiB. One mutex serializes the registry
-  and the channel store. It covers `Refresh`, reconciliation and the
-  calls that follow them in that request. The lock is not held while a
-  body is read or a response is written.
+  and the channel store. It covers a due cleanup, `Refresh`,
+  reconciliation and the calls that follow them in that request. The
+  lock is not held while a body is read or a response is written.
 - The routes are `GET /v1/hello`, `POST /v1/register`, `GET /v1/seats`,
   `GET /v1/channels`, `PUT` and `DELETE` on
   `/v1/channels/{owner}/{chat}`, `PUT` on `.../members`, and `GET` and
@@ -86,9 +86,12 @@ go run ./tools/covercheck
   binds. A request whose `Refresh` reports revoked ids reconciles before
   it does anything else. `Register` can report that the id it just bound
   was revoked a moment earlier; that id is treated as inactive for the
-  cleanup, so the new seat inherits nothing. Reconciliation removes
-  every channel whose owner is not active and strips every member that
-  is not active.
+  cleanup, so the new seat inherits nothing. A cleanup that fails stays
+  due, together with those ids. Every later request tries it again before
+  it asks the registry, and answers internal if it fails again. The mark
+  is cleared only when reconcile returns no error. Registration during
+  that failure spends no code. Reconciliation removes every channel whose
+  owner is not active and strips every member that is not active.
 - Fuzz targets are `FuzzParse` in `internal/invite` and `FuzzJournal` in
   `internal/journal`, one in each package.
 

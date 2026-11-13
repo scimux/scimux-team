@@ -250,7 +250,7 @@ func (s *server) reconcile(skip []string) error {
 	if s.channels == nil {
 		return nil
 	}
-	return s.channels.Reconcile(func(id string) bool {
+	return reconcileStore(s.channels, func(id string) bool {
 		if _, ok := s.reg.Seat(id); !ok {
 			return false
 		}

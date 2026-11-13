@@ -71,10 +71,12 @@ channels and a channel has at most 200 members. A read returns at most
 one exists. There is no flag for any of these.
 
 `revoke` removes the seat. A running server drops that seat's channels
-and memberships before it handles the next request. A server that starts
-after a revocation does the same cleanup before it listens. A later
-registration of the same installation id starts with no channels and no
-memberships.
+and memberships before it handles the next request. If that cleanup
+fails, later requests try it again and answer internal until it
+succeeds. Registration is refused, and spends no code, while the
+cleanup is still due. A server that starts after a revocation does the
+same cleanup before it listens. A later registration of the same
+installation id starts with no channels and no memberships.
 
 `-name` is the server name recorded on the first start. It follows the
 seat-name rule: 1 to 64 bytes of UTF-8, no control character, and no

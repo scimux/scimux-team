@@ -67,10 +67,12 @@ type seatJSON struct {
 // channel store. The lock is not held while a body is read or a response
 // is written.
 type server struct {
-	reg      *registry.Registry
-	channels *channel.Store
-	mu       sync.Mutex
-	mux      *http.ServeMux
+	reg         *registry.Registry
+	channels    *channel.Store
+	mu          sync.Mutex
+	mux         *http.ServeMux
+	cleanupDue  bool
+	cleanupSkip []string
 }
 
 // beforeRegister, when set, runs after Refresh and before Register.
@@ -134,22 +136,50 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // withRegistry holds the handler mutex around Refresh and the calls that
-// use that refresh. A revoke applied by Refresh is reconciled before the
-// request continues. Callers read a body before it and write the response
-// after it returns.
+// use that refresh. A cleanup that is already due runs first, and a failure
+// there returns before the registry is asked. A revoke applied by Refresh
+// is reconciled before the request continues. A failed reconcile stays due
+// until a later call succeeds. Callers read a body before it and write the
+// response after it returns.
 func (s *server) withRegistry(fn func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.finishCleanup(); err != nil {
+		return err
+	}
 	revoked, err := s.reg.Refresh()
 	if err != nil {
 		return err
 	}
 	if len(revoked) > 0 {
 		if err := s.reconcile(nil); err != nil {
+			s.noteCleanup(nil)
 			return err
 		}
 	}
 	return fn()
+}
+
+// finishCleanup repeats a reconcile that an earlier request could not
+// finish. The mark stays set until reconcile returns no error.
+func (s *server) finishCleanup() error {
+	if !s.cleanupDue {
+		return nil
+	}
+	if err := s.reconcile(s.cleanupSkip); err != nil {
+		return err
+	}
+	s.cleanupDue = false
+	s.cleanupSkip = nil
+	return nil
+}
+
+// noteCleanup remembers that reconcile failed. skip holds installation ids
+// Register just rebound; they are active and must still be treated as
+// inactive. A nil skip means the registry already shows the seats as gone.
+func (s *server) noteCleanup(skip []string) {
+	s.cleanupDue = true
+	s.cleanupSkip = append([]string(nil), skip...)
 }
 
 func (s *server) finish(w http.ResponseWriter, err error, status int, v any) {
@@ -211,6 +241,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		// inherits nothing.
 		if len(revoked) > 0 {
 			if err := s.reconcile(revoked); err != nil {
+				s.noteCleanup(revoked)
 				return err
 			}
 		}
