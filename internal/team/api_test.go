@@ -209,6 +209,37 @@ func TestBodyLimitUnknownFieldAndTrailing(t *testing.T) {
 	}
 }
 
+func TestTrailingSpacePastTheLimitIsTooLarge(t *testing.T) {
+	reg, h := testHandler(t, &seqReader{}, "relay a")
+	code, _, err := reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := journalOf(t, reg)
+	object := jsonBody(code, inst(0x11), "seat a")
+	status, _, body := do(h, http.MethodPost, "/v1/register", "", bytes.NewReader(pastLimit(object)))
+	if status != http.StatusRequestEntityTooLarge || string(body) != `{"error":"too_large"}` || !bytes.Equal(journalOf(t, reg), before) {
+		t.Fatalf("register %d %s", status, body)
+	}
+	token, _, err := reg.Register(code, inst(0x11), "seat a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat := `{"name":"seat a2"}`
+	status, _, body = do(h, http.MethodPut, "/v1/seat", token, bytes.NewReader(pastLimit(seat)))
+	if status != http.StatusRequestEntityTooLarge || string(body) != `{"error":"too_large"}` {
+		t.Fatalf("rename %d %s", status, body)
+	}
+	listed := reg.Seats()
+	if len(listed) != 1 || listed[0].Name != "seat a" {
+		t.Fatalf("renamed %+v", listed)
+	}
+}
+
+func pastLimit(object string) []byte {
+	return append([]byte(object), bytes.Repeat([]byte{' '}, maxBodyBytes-len(object)+1)...)
+}
+
 func TestConstantNotFound(t *testing.T) {
 	_, h := testHandler(t, bytes.NewReader(bytes.Repeat([]byte{0x01}, 16)), "relay a")
 	const want = `{"error":"not_found"}`
