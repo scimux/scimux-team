@@ -79,6 +79,14 @@ type server struct {
 // Production leaves it nil. A test uses it to revoke a seat in that window.
 var beforeRegister func()
 
+// beforeRename, when set, runs after Refresh and before Rename.
+// Production leaves it nil.
+var beforeRename func()
+
+// beforeRevokeSeat, when set, runs after Refresh and before RevokeSeat.
+// Production leaves it nil.
+var beforeRevokeSeat func()
+
 func newHandler(reg *registry.Registry) *server {
 	s := &server{reg: reg}
 	mux := http.NewServeMux()

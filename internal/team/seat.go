@@ -39,6 +39,9 @@ func (s *server) putSeat(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return errUnauthorized
 		}
+		if beforeRename != nil {
+			beforeRename()
+		}
 		var renErr error
 		seat, renErr = s.reg.Rename(authed.ID, req.Name)
 		return renErr
@@ -51,6 +54,9 @@ func (s *server) deleteSeat(w http.ResponseWriter, r *http.Request) {
 		seat, ok := authenticate(s.reg, r)
 		if !ok {
 			return errUnauthorized
+		}
+		if beforeRevokeSeat != nil {
+			beforeRevokeSeat()
 		}
 		if _, err := revokeSeatFn(s.reg, seat.ID); err != nil {
 			return err

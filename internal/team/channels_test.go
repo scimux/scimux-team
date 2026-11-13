@@ -1157,6 +1157,207 @@ func TestConcurrentAppendsOverHTTP(t *testing.T) {
 	}
 }
 
+func TestRevokeBetweenRefreshAndTheCallIsCleanedUp(t *testing.T) {
+	// Each subtest revokes seat a from a second registry after this
+	// request's Refresh and before the registry call. The call itself
+	// then fails, except the successful rename.
+	t.Run("refused registration", func(t *testing.T) {
+		p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+		saveTeamSeams(t)
+		beforeRegister = func() { revokeFrom(t, second, ownerID) }
+		status, _, body := call(p.h, http.MethodPost, "/v1/register", "", `{"join_code":"not-a-code","installation_id":"`+inst(0x99)+`","name":"seat z"}`)
+		if status != http.StatusForbidden || string(body) != `{"error":"join_refused"}` {
+			t.Fatalf("refused %d %s", status, body)
+		}
+		assertRevokedSeatIsGone(t, p, ownerID, otherTok, thirdTok)
+	})
+
+	t.Run("successful rename", func(t *testing.T) {
+		p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+		saveTeamSeams(t)
+		beforeRename = func() { revokeFrom(t, second, ownerID) }
+		status, _, body := call(p.h, http.MethodPut, "/v1/seat", otherTok, `{"name":"seat b2"}`)
+		if status != http.StatusOK || !strings.Contains(string(body), `"name":"seat b2"`) {
+			t.Fatalf("rename %d %s", status, body)
+		}
+		assertRevokedSeatIsGone(t, p, ownerID, otherTok, thirdTok)
+	})
+
+	t.Run("refused rename", func(t *testing.T) {
+		p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+		saveTeamSeams(t)
+		beforeRename = func() { revokeFrom(t, second, ownerID) }
+		status, _, body := call(p.h, http.MethodPut, "/v1/seat", otherTok, `{"name":""}`)
+		if status != http.StatusBadRequest || string(body) != `{"error":"bad_request"}` {
+			t.Fatalf("bad name %d %s", status, body)
+		}
+		listed := callOK(t, p.h, http.MethodGet, "/v1/seats", thirdTok, "")
+		if !strings.Contains(listed, `"name":"seat b"`) {
+			t.Fatalf("name changed %s", listed)
+		}
+		assertRevokedSeatIsGone(t, p, ownerID, otherTok, thirdTok)
+	})
+
+	t.Run("leave of another seat", func(t *testing.T) {
+		p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+		otherID := inst(0x22)
+		saveTeamSeams(t)
+		// The operator revokes the caller as well, so RevokeSeat fails
+		// after it has replayed the other seat's revoke.
+		beforeRevokeSeat = func() {
+			revokeFrom(t, second, ownerID)
+			revokeFrom(t, second, otherID)
+		}
+		status, _, body := call(p.h, http.MethodDelete, "/v1/seat", otherTok, "")
+		if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` {
+			t.Fatalf("leave %d %s", status, body)
+		}
+		assertRevokedSeatIsGone(t, p, ownerID, thirdTok, thirdTok)
+		if _, err := os.Stat(filepath.Join(p.dir, "channels", otherID, "beta")); !os.IsNotExist(err) {
+			t.Fatalf("beta %v", err)
+		}
+	})
+
+	t.Run("refresh meets a damaged line", func(t *testing.T) {
+		p, ownerID, _, otherTok, _, second := revokedSeatFixture(t)
+		revokeFrom(t, second, ownerID)
+		f, err := os.OpenFile(p.reg.Path(), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("{\"type\":\"zzz\"}\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		status, _, body := call(p.h, http.MethodGet, "/v1/channels", otherTok, "")
+		if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("zzz")) {
+			t.Fatalf("refresh %d %s", status, body)
+		}
+		if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); !os.IsNotExist(err) {
+			t.Fatalf("alpha %v", err)
+		}
+	})
+}
+
+func TestRenameCleanupFailureStaysDue(t *testing.T) {
+	p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+	saveTeamSeams(t)
+	left := 1
+	reconcileStore = func(st *channel.Store, active func(string) bool) error {
+		if left > 0 {
+			left--
+			return errors.New("reconcile blocked")
+		}
+		return st.Reconcile(active)
+	}
+	beforeRename = func() { revokeFrom(t, second, ownerID) }
+	status, _, body := call(p.h, http.MethodPut, "/v1/seat", otherTok, `{"name":"seat b2"}`)
+	if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("reconcile blocked")) {
+		t.Fatalf("cleanup %d %s", status, body)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", thirdTok, ""); strings.Contains(got, ownerID) || strings.Contains(got, `"chat":"alpha"`) {
+		t.Fatalf("still there %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("alpha remains %v", err)
+	}
+}
+
+func TestLeaveCleanupFailureStaysDue(t *testing.T) {
+	p, ownerID, _, otherTok, thirdTok, second := revokedSeatFixture(t)
+	otherID := inst(0x22)
+	saveTeamSeams(t)
+	left := 1
+	reconcileStore = func(st *channel.Store, active func(string) bool) error {
+		if left > 0 {
+			left--
+			return errors.New("reconcile blocked")
+		}
+		return st.Reconcile(active)
+	}
+	beforeRevokeSeat = func() {
+		revokeFrom(t, second, ownerID)
+		revokeFrom(t, second, otherID)
+	}
+	status, _, body := call(p.h, http.MethodDelete, "/v1/seat", otherTok, "")
+	if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("reconcile blocked")) {
+		t.Fatalf("cleanup %d %s", status, body)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", thirdTok, ""); strings.Contains(got, ownerID) || strings.Contains(got, `"chat":"alpha"`) {
+		t.Fatalf("still there %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("alpha remains %v", err)
+	}
+}
+
+// revokedSeatFixture registers three seats. Seat a owns alpha and is a
+// member of beta and gamma. otherTok is seat b. thirdTok is seat c.
+func revokedSeatFixture(t *testing.T) (p *party, ownerID, ownerTok, otherTok, thirdTok string, second *registry.Registry) {
+	t.Helper()
+	p = newParty(t, channel.Options{})
+	ownerID = inst(0x11)
+	otherID, thirdID := inst(0x22), inst(0x33)
+	ownerTok = p.seat(t, 0x11, "seat a")
+	otherTok = p.seat(t, 0x22, "seat b")
+	thirdTok = p.seat(t, 0x33, "seat c")
+	p.create(t, ownerTok, ownerID, "alpha", "title-alpha")
+	p.create(t, otherTok, otherID, "beta", "title-beta")
+	p.members(t, otherTok, otherID, "beta", ownerID, "")
+	p.create(t, thirdTok, thirdID, "gamma", "title-gamma")
+	p.members(t, thirdTok, thirdID, "gamma", "", ownerID)
+	second = openRegistry(t, p.dir, registry.Options{Now: fixedNow, Entropy: &seqReader{n: 180}})
+	return p, ownerID, ownerTok, otherTok, thirdTok, second
+}
+
+func revokeFrom(t *testing.T, reg *registry.Registry, id string) {
+	t.Helper()
+	if _, err := reg.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Revoke(id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRevokedSeatIsGone(t *testing.T, p *party, ownerID, listTok, memberOwnerTok string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("alpha %v", err)
+	}
+	listed := callOK(t, p.h, http.MethodGet, "/v1/channels", memberOwnerTok, "")
+	if strings.Contains(listed, ownerID) {
+		t.Fatalf("still a member %s", listed)
+	}
+	code, _, err := p.reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, body := call(p.h, http.MethodPost, "/v1/register", "", jsonBody(code, ownerID, "seat a2"))
+	if status != http.StatusCreated {
+		t.Fatalf("register %d %s", status, body)
+	}
+	var created registerResp
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", created.Token, ""); got != `{"channels":[]}` {
+		t.Fatalf("inherited %s", got)
+	}
+	again := callOK(t, p.h, http.MethodGet, "/v1/channels", listTok, "")
+	if strings.Contains(again, ownerID) || strings.Contains(again, `"chat":"alpha"`) {
+		t.Fatalf("put back %s", again)
+	}
+}
+
 type party struct {
 	reg *registry.Registry
 	h   *server
@@ -1285,8 +1486,10 @@ func oneLine(t *testing.T, owner string) int64 {
 func saveTeamSeams(t *testing.T) {
 	t.Helper()
 	open, recon, before := openChannelStore, reconcileStore, beforeRegister
+	rename, leave := beforeRename, beforeRevokeSeat
 	t.Cleanup(func() {
 		openChannelStore, reconcileStore, beforeRegister = open, recon, before
+		beforeRename, beforeRevokeSeat = rename, leave
 	})
 }
 
