@@ -665,6 +665,98 @@ func TestRefreshReconcileFailureIsInternal(t *testing.T) {
 	}
 }
 
+func TestFailedCleanupIsRetriedAndRegisterSpendsNoCode(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID, otherID := inst(0x11), inst(0x22)
+	owner := p.seat(t, 0x11, "seat a")
+	other := p.seat(t, 0x22, "seat b")
+	p.create(t, owner, ownerID, "alpha", "title-alpha")
+	p.create(t, other, otherID, "beta", "title-beta")
+	callOK(t, p.h, http.MethodPut, "/v1/channels/"+otherID+"/beta/members", other, `{"members":[{"seat":"`+ownerID+`","access":"read"}]}`)
+	code, _, err := p.reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := openRegistry(t, p.dir, registry.Options{Now: fixedNow, Entropy: &seqReader{n: 120}})
+	if _, err := second.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Revoke(ownerID); err != nil {
+		t.Fatal(err)
+	}
+	saveTeamSeams(t)
+	left := 2
+	reconcileStore = func(st *channel.Store, active func(string) bool) error {
+		if left > 0 {
+			left--
+			return errors.New("reconcile blocked")
+		}
+		return st.Reconcile(active)
+	}
+	internal := func(status int, body []byte) {
+		t.Helper()
+		if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("title-")) {
+			t.Fatalf("cleanup %d %s", status, body)
+		}
+	}
+	status, _, body := call(p.h, http.MethodGet, "/v1/channels", other, "")
+	internal(status, body)
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	regBody := `{"join_code":"` + code + `","installation_id":"` + ownerID + `","name":"seat a2"}`
+	status, _, body = call(p.h, http.MethodPost, "/v1/register", "", regBody)
+	internal(status, body)
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	status, _, body = call(p.h, http.MethodPost, "/v1/register", "", regBody)
+	if status != http.StatusCreated {
+		t.Fatalf("register %d %s", status, body)
+	}
+	var created registerResp
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", created.Token, ""); got != `{"channels":[]}` {
+		t.Fatalf("inherited %s", got)
+	}
+	list := callOK(t, p.h, http.MethodGet, "/v1/channels", other, "")
+	if strings.Contains(list, ownerID) || strings.Contains(list, `"chat":"alpha"`) || !strings.Contains(list, `"chat":"beta"`) || !strings.Contains(list, `"members":[]`) {
+		t.Fatalf("after retry %s", list)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", ownerID, "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("alpha remains %v", err)
+	}
+
+	// Register itself reports the revoked id. The cleanup has to remember
+	// that id, because the new seat is already active.
+	again, _, err := p.reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRegister = func() {
+		if _, err := second.Refresh(); err != nil {
+			t.Errorf("refresh %v", err)
+		}
+		if _, err := second.Revoke(otherID); err != nil {
+			t.Errorf("revoke %v", err)
+		}
+	}
+	left = 1
+	status, _, body = call(p.h, http.MethodPost, "/v1/register", "", `{"join_code":"`+again+`","installation_id":"`+otherID+`","name":"seat b2"}`)
+	internal(status, body)
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", otherID, "beta")); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", created.Token, ""); got != `{"channels":[]}` {
+		t.Fatalf("kept %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "channels", otherID, "beta")); !os.IsNotExist(err) {
+		t.Fatalf("beta remains %v", err)
+	}
+}
+
 func TestStartupReconcileRunsBeforeServe(t *testing.T) {
 	restoreSeams(t)
 	dir := t.TempDir()
