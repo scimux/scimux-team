@@ -988,6 +988,19 @@ func TestServeStartsWithADamagedChannel(t *testing.T) {
 	srv.wait(t)
 }
 
+func TestClosedStoreListIsInternal(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	owner := p.seat(t, 0x11, "seat a")
+	p.create(t, owner, inst(0x11), "alpha", "title-secret")
+	if err := p.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, _, body := call(p.h, http.MethodGet, "/v1/channels", owner, "")
+	if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("title-secret")) {
+		t.Fatalf("closed %d %s", status, body)
+	}
+}
+
 func TestHandlerWithoutAStoreIsInternal(t *testing.T) {
 	reg, h := testHandler(t, &seqReader{}, "relay a")
 	code, _, err := reg.Issue()
