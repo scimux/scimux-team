@@ -199,6 +199,40 @@ func TestReadReturnsStoredBodiesAfterReopen(t *testing.T) {
 	}
 }
 
+func TestListReturnsALogOpenError(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	if _, _, err := s.Put(owner, "chat", "feat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"n":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	mirror := filepath.Join(dir, "channels", owner, "chat", mirrorName)
+	if err := os.Rename(mirror, mirror+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(mirror, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir, Options{})
+	if _, err := s.List(owner); err == nil || errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(mirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(mirror+".bak", mirror); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List(owner)
+	if err != nil || len(list) != 1 || list[0].MirrorLast != 1 || list[0].Title != "feat" {
+		t.Fatalf("restored %+v %v", list, err)
+	}
+}
+
 func TestChangedLineFailsOnlyThatChannel(t *testing.T) {
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
@@ -230,6 +264,48 @@ func TestChangedLineFailsOnlyThatChannel(t *testing.T) {
 	entries, last, _, err := s.Read(other, "chat", Mirror, 0)
 	if err != nil || last != 1 || len(entries) != 1 || string(entries[0].Body) != `{"n":2}` {
 		t.Fatalf("sibling %+v %v", entries, err)
+	}
+}
+
+func TestUnreadableIndexedLineIsNotDamage(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
+	owner, other := id(0x11), id(0x22)
+	if _, _, err := s.Put(owner, "chat", "owned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(other, "chat", "theirs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"n":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(other, "chat", Mirror, other, []NewEntry{{Key: "k", Body: json.RawMessage(`{"n":2}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	mirror := filepath.Join(dir, "channels", owner, "chat", mirrorName)
+	original := fileBytes(t, mirror)
+	if len(original) == 0 || original[len(original)-1] != '\n' {
+		t.Fatalf("line %q", original)
+	}
+	torn := append([]byte(nil), original...)
+	torn[len(torn)-1] = 'x'
+	if err := os.WriteFile(mirror, torn, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); err == nil || errors.Is(err, errDamaged) || strings.Contains(err.Error(), "n") {
+		t.Fatal(err)
+	}
+	entries, _, _, err := s.Read(other, "chat", Mirror, 0)
+	if err != nil || len(entries) != 1 || string(entries[0].Body) != `{"n":2}` {
+		t.Fatalf("sibling %+v %v", entries, err)
+	}
+	if err := os.WriteFile(mirror, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, last, _, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || last != 1 || len(entries) != 1 || string(entries[0].Body) != `{"n":1}` {
+		t.Fatalf("restored %+v %v", entries, err)
 	}
 }
 
