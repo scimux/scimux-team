@@ -141,7 +141,7 @@ func saveSeams(t *testing.T) {
 		syncFile: syncFile, closeFile: closeFile, renameFile: renameFile, openJournal: openJournal,
 		openJournalAt: openJournalAt, closeJournal: closeJournal, readLogLine: readLogLine,
 		marshalValue: marshalValue, readFull: readFull, syncDir: syncDir, syncDirFile: syncDirFile,
-		beforeLogUpdate: beforeLogUpdate,
+		beforeLogUpdate: beforeLogUpdate, openBlob: openBlob, closeBlob: closeBlob, lstatPath: lstatPath,
 	}
 	t.Cleanup(func() {
 		readBodyLimit = limit
@@ -165,6 +165,9 @@ func saveSeams(t *testing.T) {
 		syncDir = prev.syncDir
 		syncDirFile = prev.syncDirFile
 		beforeLogUpdate = prev.beforeLogUpdate
+		openBlob = prev.openBlob
+		closeBlob = prev.closeBlob
+		lstatPath = prev.lstatPath
 	})
 }
 
@@ -189,4 +192,7 @@ type seams struct {
 	syncDir         func(string) error
 	syncDirFile     func(*os.File) error
 	beforeLogUpdate func()
+	openBlob        func(string) (*os.File, error)
+	closeBlob       func(*os.File) error
+	lstatPath       func(string) (os.FileInfo, error)
 }

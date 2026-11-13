@@ -142,6 +142,12 @@ type Options struct {
 	// MaxChannelsPerOwner is the most channels one seat may own. Zero means 1000.
 	MaxChannelsPerOwner int
 
+	// MaxBlobBytes is the most bytes of blobs in one channel. Zero means 256 MiB.
+	MaxBlobBytes int64
+
+	// MaxBlobsPerChannel is the most blobs in one channel. Zero means 4096.
+	MaxBlobsPerChannel int
+
 	// Now supplies the clock. Nil means time.Now.
 	Now func() time.Time
 
