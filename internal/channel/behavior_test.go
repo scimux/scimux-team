@@ -1156,3 +1156,58 @@ func TestReadRejectsABadLogAndAMissingChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMetaReadsOnlyChannelJSON(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	if _, created, err := s.Put(owner, "chat", "feat"); err != nil || !created {
+		t.Fatal(err, created)
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Meta("nope", "chat"); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	if _, err := s.Meta(owner, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	saveSeams(t)
+	fresh := openStore(t, dir, Options{})
+	readDir = func(string) ([]os.DirEntry, error) { return nil, errors.New("scan blocked") }
+	if _, err := fresh.Meta(owner, "chat"); err == nil || !strings.Contains(err.Error(), "scan blocked") {
+		t.Fatal(err)
+	}
+	readDir = os.ReadDir
+	s.Close()
+	if _, err := s.Meta(owner, "chat"); err == nil || errors.Is(err, errDamaged) || errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir, Options{})
+	var opens int
+	restore := ReplaceLogOpeners(
+		func(path string) (*journal.File, error) {
+			opens++
+			return journal.Open(path)
+		},
+		func(path string, off int64) (*journal.File, error) {
+			opens++
+			return journal.OpenAt(path, off)
+		},
+	)
+	defer restore()
+	info, err := s.Meta(owner, "chat")
+	if err != nil || info.Title != "feat" || info.MirrorLast != 0 || info.CommentsLast != 0 || opens != 0 {
+		t.Fatalf("%+v %v opens %d", info, err, opens)
+	}
+	restore()
+	if err := os.WriteFile(filepath.Join(dir, "channels", owner, "chat", metaName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s = openStore(t, dir, Options{})
+	if _, err := s.Meta(owner, "chat"); !errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+}

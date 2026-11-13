@@ -107,6 +107,22 @@ var syncDirFile = func(f *os.File) error { return f.Sync() }
 // line in that window, which is otherwise a race with another process.
 var beforeLogUpdate func()
 
+// ReplaceLogOpeners installs the functions that open a channel log and
+// returns a function that puts the previous ones back. A test counts
+// calls. Production does not use it.
+func ReplaceLogOpeners(open func(string) (*journal.File, error), openAt func(string, int64) (*journal.File, error)) func() {
+	prev, prevAt := openJournal, openJournalAt
+	openJournal, openJournalAt = open, openAt
+	return func() {
+		openJournal, openJournalAt = prev, prevAt
+	}
+}
+
+// Meta is the channel record used to decide who can see a channel.
+func (s *Store) Meta(owner, chatID string) (Info, error) {
+	return s.Get(owner, chatID)
+}
+
 // syncDir pushes a directory entry to disk after a rename. The rename is
 // the commit; a failure here is ignored because the new name is already
 // visible.

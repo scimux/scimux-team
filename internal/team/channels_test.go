@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/scimux/scimux-team/internal/channel"
+	"github.com/scimux/scimux-team/internal/journal"
 	"github.com/scimux/scimux-team/internal/registry"
 )
 
@@ -1568,4 +1569,146 @@ func reqJSON(t *testing.T, client *http.Client, method, url, token, body string)
 		t.Fatal(err)
 	}
 	return resp.StatusCode, string(b)
+}
+
+func TestStrangerCannotSeeChannelDamage(t *testing.T) {
+	blobID := strings.Repeat("ab", 32)
+	routes := []struct {
+		method, suffix, body string
+	}{
+		{http.MethodPut, "", `{"title":"t"}`},
+		{http.MethodDelete, "", ""},
+		{http.MethodPut, "/members", `{"members":[]}`},
+		{http.MethodDelete, "/membership", ""},
+		{http.MethodPut, "/blobs/" + blobID, "x"},
+		{http.MethodGet, "/blobs/" + blobID, ""},
+		{http.MethodGet, "/mirror", ""},
+		{http.MethodPost, "/mirror", `{"entries":[{"key":"k","body":1}]}`},
+		{http.MethodGet, "/comments", ""},
+		{http.MethodPost, "/comments", `{"entries":[{"key":"c","body":1}]}`},
+	}
+	faults := []struct {
+		name  string
+		plant func(t *testing.T, dir, owner string)
+		meta  bool
+	}{
+		{"damaged mirror", func(t *testing.T, dir, owner string) {
+			appendLogLine(t, filepath.Join(dir, "channels", owner, "room", "mirror.jsonl"))
+		}, false},
+		{"damaged comments", func(t *testing.T, dir, owner string) {
+			appendLogLine(t, filepath.Join(dir, "channels", owner, "room", "comments.jsonl"))
+		}, false},
+		{"missing log", func(t *testing.T, dir, owner string) {
+			if err := os.Remove(filepath.Join(dir, "channels", owner, "room", "mirror.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"damaged channel.json", func(t *testing.T, dir, owner string) {
+			if err := os.WriteFile(filepath.Join(dir, "channels", owner, "room", "channel.json"), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	}
+	for _, fault := range faults {
+		t.Run(fault.name, func(t *testing.T) {
+			p, ownerID, ownerTok, memberTok, strangerTok := plantedChannel(t, fault.plant)
+			for _, rt := range routes {
+				real := "/v1/channels/" + ownerID + "/room" + rt.suffix
+				missing := "/v1/channels/" + ownerID + "/absent" + rt.suffix
+				t.Run(rt.method+" "+rt.suffix, func(t *testing.T) {
+					opens := 0
+					restore := channel.ReplaceLogOpeners(
+						func(path string) (*journal.File, error) {
+							opens++
+							return journal.Open(path)
+						},
+						func(path string, off int64) (*journal.File, error) {
+							opens++
+							return journal.OpenAt(path, off)
+						},
+					)
+					status, hdr, body := call(p.h, rt.method, real, strangerTok, rt.body)
+					restore()
+					if opens != 0 {
+						t.Fatalf("stranger opened %d logs", opens)
+					}
+					sameAnswer(t, p.h, rt.method, real, missing, strangerTok, rt.body, status, hdr, body)
+					if fault.meta {
+						sameAnswer(t, p.h, rt.method, real, missing, memberTok, rt.body, 0, nil, nil)
+						expectInternal(t, p.h, rt.method, real, ownerTok, rt.body)
+						return
+					}
+					expectInternal(t, p.h, rt.method, real, ownerTok, rt.body)
+					expectInternal(t, p.h, rt.method, real, memberTok, rt.body)
+				})
+			}
+		})
+	}
+}
+
+func plantedChannel(t *testing.T, plant func(t *testing.T, dir, owner string)) (p *party, ownerID, ownerTok, memberTok, strangerTok string) {
+	t.Helper()
+	p = newParty(t, channel.Options{})
+	ownerID = inst(0x11)
+	memberID := inst(0x22)
+	ownerTok = p.seat(t, 0x11, "seat a")
+	memberTok = p.seat(t, 0x22, "seat b")
+	strangerTok = p.seat(t, 0x33, "seat c")
+	p.create(t, ownerTok, ownerID, "room", "title-room")
+	p.members(t, ownerTok, ownerID, "room", memberID, "")
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/mirror", ownerTok, `{"entries":[{"key":"k","body":1}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/comments", memberTok, `{"entries":[{"key":"c","body":2}]}`)
+	plant(t, p.dir, ownerID)
+	reopenChannels(t, p)
+	return p, ownerID, ownerTok, memberTok, strangerTok
+}
+
+func reopenChannels(t *testing.T, p *party) {
+	t.Helper()
+	if err := p.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := channel.Open(p.dir, channel.Options{Now: fixedNow, Entropy: &seqReader{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p.st = st
+	p.h.channels = st
+}
+
+func appendLogLine(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("not json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sameAnswer(t *testing.T, h http.Handler, method, real, missing, token, body string, status int, hdr http.Header, got []byte) {
+	t.Helper()
+	if status == 0 {
+		status, hdr, got = call(h, method, real, token, body)
+	}
+	s2, h2, b2 := call(h, method, missing, token, body)
+	if status != http.StatusNotFound || s2 != status || !bytes.Equal(got, b2) || string(got) != `{"error":"not_found"}` {
+		t.Fatalf("%s real %d %s missing %d %s", method, status, got, s2, b2)
+	}
+	if hdr.Get("Content-Type") != h2.Get("Content-Type") || hdr.Get("Cache-Control") != h2.Get("Cache-Control") || hdr.Get("X-Content-Type-Options") != h2.Get("X-Content-Type-Options") || hdr.Get("Location") != "" || h2.Get("Location") != "" {
+		t.Fatalf("headers %v %v", hdr, h2)
+	}
+}
+
+func expectInternal(t *testing.T, h http.Handler, method, path, token, body string) {
+	t.Helper()
+	status, _, got := call(h, method, path, token, body)
+	if status != http.StatusInternalServerError || string(got) != `{"error":"internal"}` {
+		t.Fatalf("%s %d %s", method, status, got)
+	}
 }
