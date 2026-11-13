@@ -674,26 +674,168 @@ func TestDamagedMetaAndLogShapes(t *testing.T) {
 	if err := os.WriteFile(mirror, goodMirror, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A missing channel.json is damage, and it sticks for the open store.
+	// A chat directory without channel.json is not a channel. The old log
+	// is not readable through it, and creating the channel starts over.
 	if err := os.Remove(meta); err != nil {
 		t.Fatal(err)
 	}
-	s = openStore(t, dir, Options{})
-	if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
+	s = openStore(t, dir, Options{Entropy: bytes.NewReader(bytes.Repeat([]byte{0xab}, 8))})
+	if _, err := s.Get(owner, "chat"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(meta, goodMeta, 0o600); err != nil {
+	if _, err := os.Stat(meta); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("missing channel.json was recreated")
+	}
+	listed, err := s.List(owner)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("listed %+v %v", listed, err)
+	}
+	info, created, err := s.Put(owner, "chat", "feat")
+	if err != nil || !created || info.MirrorLast != 0 || info.CommentsLast != 0 || info.Generation != "abababababababab" {
+		t.Fatalf("put %+v %v %v", info, created, err)
+	}
+	entries, last, _, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || last != 0 || len(entries) != 0 || bytes.Contains(fileBytes(t, mirror), []byte(`{"a":1}`)) {
+		t.Fatalf("old log %+v %d %v", entries, last, err)
+	}
+}
+
+func TestMissingLogIsDamage(t *testing.T) {
+	for _, logName := range []string{mirrorName, commentsName} {
+		t.Run(logName+" removed before restart", func(t *testing.T) {
+			dir, owner := channelWithBothLogs(t)
+			path := filepath.Join(dir, "channels", owner, "chat", logName)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			s := openStore(t, dir, Options{})
+			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
+				t.Fatalf("get %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("missing log was recreated")
+			}
+			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
+				t.Fatal("damage did not stick")
+			}
+			listed, err := s.List(owner)
+			if err != nil || len(listed) != 0 {
+				t.Fatalf("list %+v %v", listed, err)
+			}
+		})
+		t.Run(logName+" removed while open", func(t *testing.T) {
+			dir, owner, s := openChannelWithBothLogs(t)
+			path := filepath.Join(dir, "channels", owner, "chat", logName)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
+				t.Fatalf("get %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("missing log was recreated")
+			}
+			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
+				t.Fatal("damage did not stick")
+			}
+		})
+	}
+}
+
+func TestCreateWritesTheLogsBeforeChannelJSON(t *testing.T) {
+	saveSeams(t)
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
+	owner := id(0x11)
+	chatDir := filepath.Join(dir, "channels", owner, "chat")
+	sawMirror, sawComments := false, false
+	origMarshal := marshalValue
+	marshalValue = func(v any) ([]byte, error) {
+		if _, err := os.Stat(filepath.Join(chatDir, mirrorName)); err == nil {
+			sawMirror = true
+		}
+		if _, err := os.Stat(filepath.Join(chatDir, commentsName)); err == nil {
+			sawComments = true
+		}
+		return nil, errors.New("meta blocked")
+	}
+	if _, _, err := s.Put(owner, "chat", "feat"); err == nil || !strings.Contains(err.Error(), "meta blocked") {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
-		t.Fatal("repaired meta was accepted by the same store")
+	if !sawMirror || !sawComments {
+		t.Fatalf("logs before channel.json mirror %v comments %v", sawMirror, sawComments)
 	}
+	if _, err := os.Stat(chatDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("failed create left a directory")
+	}
+	marshalValue = origMarshal
+	info, created, err := s.Put(owner, "chat", "feat")
+	if err != nil || !created || info.MirrorLast != 0 || info.CommentsLast != 0 {
+		t.Fatalf("put %+v %v %v", info, created, err)
+	}
+	entries, last, _, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || last != 0 || len(entries) != 0 {
+		t.Fatalf("log %+v %d %v", entries, last, err)
+	}
+}
+
+func TestDirectoryWithoutMetaIsNotAChannel(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	chatDir := filepath.Join(dir, "channels", owner, "chat")
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, mirrorName), []byte("secret-mirror\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, commentsName), []byte("secret-comments\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(owner, "chat"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	listed, err := s.List(owner)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("list %+v %v", listed, err)
+	}
+	info, created, err := s.Put(owner, "chat", "feat")
+	if err != nil || !created || info.Generation != "0102030405060708" || info.MirrorLast != 0 || info.CommentsLast != 0 {
+		t.Fatalf("put %+v %v %v", info, created, err)
+	}
+	if bytes.Contains(fileBytes(t, filepath.Join(chatDir, mirrorName)), []byte("secret-mirror")) ||
+		bytes.Contains(fileBytes(t, filepath.Join(chatDir, commentsName)), []byte("secret-comments")) {
+		t.Fatal("put adopted the planted logs")
+	}
+	entries, last, _, err := s.Read(owner, "chat", Comments, 0)
+	if err != nil || last != 0 || len(entries) != 0 {
+		t.Fatalf("comments %+v %d %v", entries, last, err)
+	}
+}
+
+func channelWithBothLogs(t *testing.T) (string, string) {
+	t.Helper()
+	dir, owner, s := openChannelWithBothLogs(t)
 	s.Close()
-	fresh := openStore(t, dir, Options{})
-	entries, last, _, err := fresh.Read(owner, "chat", Mirror, 0)
-	if err != nil || last != 1 || len(entries) != 1 || string(entries[0].Body) != `{"a":1}` {
-		t.Fatalf("repaired %+v %v", entries, err)
+	return dir, owner
+}
+
+func openChannelWithBothLogs(t *testing.T) (string, string, *Store) {
+	t.Helper()
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	if _, created, err := s.Put(owner, "chat", "feat"); err != nil || !created {
+		t.Fatal(err, created)
 	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "chat", Comments, owner, []NewEntry{{Key: "c", Body: json.RawMessage(`2`)}}); err != nil {
+		t.Fatal(err)
+	}
+	return dir, owner, s
 }
 
 func TestReconcileContinuesAfterADamagedActiveOwner(t *testing.T) {
