@@ -321,6 +321,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	}
 	var extra json.RawMessage
 	if err := dec.Decode(&extra); err != io.EOF {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "too_large")
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "bad_request")
 		return false
 	}

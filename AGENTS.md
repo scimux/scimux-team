@@ -51,9 +51,10 @@ go run ./tools/covercheck
   character, and no leading or trailing space. The default is `scimux team`.
   A name that breaks the rule is a usage error and the state directory is
   left untouched.
-- A JSON request body is limited to 16 MiB. A blob upload is raw bytes,
-  at most 4 MiB, and a longer body is rejected after at most 4 MiB plus
-  one byte. One mutex serializes the registry and the channel store. It
+- A JSON request body is limited to 16 MiB. A body past that limit is
+  `413`, including white space after a valid value. A blob upload is raw
+  bytes, at most 4 MiB, and a longer body is rejected after at most 4 MiB
+  plus one byte. One mutex serializes the registry and the channel store. It
   covers a due cleanup, `Refresh`, reconciliation and the calls that
   follow them in that request. The lock is not held while a body is read
   or a response is written.
