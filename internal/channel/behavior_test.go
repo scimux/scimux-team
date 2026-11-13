@@ -704,10 +704,14 @@ func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
 			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "PLANTED-SECRET") || strings.Contains(err.Error(), "not-json") {
 				t.Fatal(err)
 			}
-			if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) {
+			damagedLog := Mirror
+			if kind.name == "comments" {
+				damagedLog = Comments
+			}
+			if _, _, _, err := s.Read(owner, "chat", damagedLog, 0); !errors.Is(err, errDamaged) {
 				t.Fatal(err)
 			}
-			if _, _, err := s.Append(owner, "chat", Comments, owner, []NewEntry{{Key: "nope", Body: json.RawMessage(`1`)}}); !errors.Is(err, errDamaged) {
+			if _, _, err := s.Append(owner, "chat", damagedLog, owner, []NewEntry{{Key: "nope", Body: json.RawMessage(`1`)}}); !errors.Is(err, errDamaged) {
 				t.Fatal(err)
 			}
 			if _, err := s.SetMembers(owner, "chat", []Member{{Seat: member, Access: "read"}}); !errors.Is(err, errDamaged) {
