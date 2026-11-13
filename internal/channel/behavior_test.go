@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/scimux/scimux-team/internal/journal"
 )
 
 func TestListOrdersAndSkipsStrayNames(t *testing.T) {
@@ -40,18 +42,25 @@ func TestListOrdersAndSkipsStrayNames(t *testing.T) {
 	}
 	s.Close()
 	s = openStore(t, dir, Options{})
-	list, err := s.List()
-	if err != nil || len(list) != 3 {
-		t.Fatalf("%d %v", len(list), err)
+	list, err := s.List(low)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("low %d %v %+v", len(list), err, list)
 	}
-	want := []string{low + "/a", low + "/b", high + "/b"}
+	want := []string{low + "/a", low + "/b"}
 	for i, info := range list {
 		if info.Owner+"/"+info.Chat != want[i] || info.Members == nil {
 			t.Fatalf("%d %+v", i, info)
 		}
 	}
+	highList, err := s.List(high)
+	if err != nil || len(highList) != 1 || highList[0].Owner+"/"+highList[0].Chat != high+"/b" || highList[0].Members == nil {
+		t.Fatalf("high %+v %v", highList, err)
+	}
+	if stranger, err := s.List(id(0x33)); err != nil || len(stranger) != 0 {
+		t.Fatalf("stranger %+v %v", stranger, err)
+	}
 	empty := openStore(t, t.TempDir(), Options{})
-	none, err := empty.List()
+	none, err := empty.List(low)
 	if err != nil || none == nil || len(none) != 0 {
 		t.Fatalf("empty %+v %v", none, err)
 	}
@@ -96,6 +105,134 @@ func TestBodiesStayOpaque(t *testing.T) {
 	}
 }
 
+func TestListDoesNotOpenHiddenLogs(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(24))})
+	owner, other, stranger := id(0x11), id(0x22), id(0x33)
+	if _, _, err := s.Put(owner, "own", "owned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(other, "secret", "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(other, "shared", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetMembers(other, "secret", []Member{{Seat: stranger, Access: "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetMembers(other, "shared", []Member{{Seat: owner, Access: "write"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "own", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"own":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(other, "secret", Mirror, other, []NewEntry{{Key: "k", Body: json.RawMessage(`{"secret":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(other, "shared", Comments, other, []NewEntry{{Key: "k", Body: json.RawMessage(`{"shared":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s = openStore(t, dir, Options{})
+	saveSeams(t)
+	var opened []string
+	openJournal = func(path string) (*journal.File, error) {
+		opened = append(opened, path)
+		return journal.Open(path)
+	}
+	list, err := s.List(owner)
+	if err != nil || len(list) != 2 || list[0].Owner+"/"+list[0].Chat != owner+"/own" || list[1].Owner+"/"+list[1].Chat != other+"/shared" {
+		t.Fatalf("list %+v %v", list, err)
+	}
+	if list[0].MirrorLast != 1 || list[1].CommentsLast != 1 || list[1].MirrorLast != 0 {
+		t.Fatalf("seq %+v", list)
+	}
+	secret := filepath.Join(dir, "channels", other, "secret")
+	for _, path := range opened {
+		if strings.HasPrefix(path, secret) {
+			t.Fatalf("opened hidden log %s in %v", path, opened)
+		}
+	}
+	want := []string{
+		filepath.Join(dir, "channels", owner, "own", mirrorName),
+		filepath.Join(dir, "channels", owner, "own", commentsName),
+		filepath.Join(dir, "channels", other, "shared", mirrorName),
+		filepath.Join(dir, "channels", other, "shared", commentsName),
+	}
+	if strings.Join(opened, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("opened %s", strings.Join(opened, "\n"))
+	}
+}
+
+func TestReadReturnsStoredBodiesAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	if _, _, err := s.Put(owner, "chat", "feat"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := []json.RawMessage{
+		json.RawMessage(`{"z":1,"a":2}`),
+		json.RawMessage(` [1, 2] `),
+		json.RawMessage(`"kept"`),
+	}
+	var batch []NewEntry
+	for i, body := range bodies {
+		batch = append(batch, NewEntry{Key: keyN(i + 1), Body: body})
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, batch); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s = openStore(t, dir, Options{})
+	entries, last, more, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || more || last != 3 || len(entries) != 3 {
+		t.Fatalf("%+v more %v last %d %v", entries, more, last, err)
+	}
+	want := []string{`{"z":1,"a":2}`, `[1,2]`, `"kept"`}
+	for i, body := range want {
+		if string(entries[i].Body) != body || entries[i].Seq != uint64(i+1) || entries[i].Key != keyN(i+1) {
+			t.Fatalf("%d %+v", i, entries[i])
+		}
+	}
+}
+
+func TestChangedLineFailsOnlyThatChannel(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
+	owner, other := id(0x11), id(0x22)
+	if _, _, err := s.Put(owner, "chat", "owned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(other, "chat", "theirs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"n":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(other, "chat", Mirror, other, []NewEntry{{Key: "k", Body: json.RawMessage(`{"n":2}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	mirror := filepath.Join(dir, "channels", owner, "chat", mirrorName)
+	original := fileBytes(t, mirror)
+	planted := bytes.Replace(original, []byte(`{"n":1}`), []byte(`{"n":9}`), 1)
+	if bytes.Equal(planted, original) {
+		t.Fatal("plant failed")
+	}
+	if err := os.WriteFile(mirror, planted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "n") {
+		t.Fatal(err)
+	}
+	entries, last, _, err := s.Read(other, "chat", Mirror, 0)
+	if err != nil || last != 1 || len(entries) != 1 || string(entries[0].Body) != `{"n":2}` {
+		t.Fatalf("sibling %+v %v", entries, err)
+	}
+}
+
 func TestOpenCloseAndDefaults(t *testing.T) {
 	var none *Store
 	if err := none.Close(); err != nil {
@@ -122,7 +259,7 @@ func TestOpenCloseAndDefaults(t *testing.T) {
 	if _, err := s.Get(owner, "chat"); !errors.Is(err, errClosed) {
 		t.Fatal(err)
 	}
-	if _, err := s.List(); !errors.Is(err, errClosed) {
+	if _, err := s.List(owner); !errors.Is(err, errClosed) {
 		t.Fatal(err)
 	}
 	if err := s.Delete(owner, "chat"); !errors.Is(err, errClosed) {
@@ -334,7 +471,7 @@ func TestDamagedRecordFailsOnlyThatChannel(t *testing.T) {
 	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), secret) {
 		t.Fatal(err)
 	}
-	list, err := s.List()
+	list, err := s.List(other)
 	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" || list[0].MirrorLast != 1 {
 		t.Fatalf("list %+v %v", list, err)
 	}
@@ -562,7 +699,7 @@ func TestListAndGetIsolateMetaAndCommentDamage(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = openStore(t, dir, Options{})
-	list, err := s.List()
+	list, err := s.List(other)
 	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" {
 		t.Fatalf("list %+v %v", list, err)
 	}
@@ -581,7 +718,7 @@ func TestListAndGetIsolateMetaAndCommentDamage(t *testing.T) {
 	if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "not-json") {
 		t.Fatal(err)
 	}
-	list, err = s.List()
+	list, err = s.List(other)
 	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" {
 		t.Fatalf("comment list %+v %v", list, err)
 	}
@@ -614,11 +751,11 @@ func TestListReturnsAReadErrorAndSkipsDamage(t *testing.T) {
 		}
 		return os.Open(path)
 	}
-	if _, err := s.List(); err == nil || !strings.Contains(err.Error(), "meta blocked") || errors.Is(err, errDamaged) {
+	if _, err := s.List(owner); err == nil || !strings.Contains(err.Error(), "meta blocked") || errors.Is(err, errDamaged) {
 		t.Fatal(err)
 	}
 	openMeta = os.Open
-	list, err := s.List()
+	list, err := s.List(owner)
 	if err != nil || len(list) != 1 || list[0].Owner != owner || list[0].Chat != "chat" || list[0].Title != "kept" {
 		t.Fatalf("skip %+v %v", list, err)
 	}
@@ -682,7 +819,7 @@ func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
 			kind.plant(t, dir)
 
 			s = openStore(t, dir, Options{})
-			list, err := s.List()
+			list, err := s.List(other)
 			if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" || list[0].Title != "theirs" || list[0].MirrorLast != 1 || list[0].CommentsLast != 1 {
 				t.Fatalf("list %+v %v", list, err)
 			}

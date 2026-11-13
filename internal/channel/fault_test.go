@@ -279,7 +279,7 @@ func TestScanErrorsAreNotSticky(t *testing.T) {
 	}{
 		{"put", func(s *Store) error { _, _, err := s.Put(owner, "chat", "feat"); return err }},
 		{"get", func(s *Store) error { _, err := s.Get(owner, "chat"); return err }},
-		{"list", func(s *Store) error { _, err := s.List(); return err }},
+		{"list", func(s *Store) error { _, err := s.List(owner); return err }},
 		{"delete", func(s *Store) error { return s.Delete(owner, "chat") }},
 		{"members", func(s *Store) error {
 			_, err := s.SetMembers(owner, "chat", []Member{{Seat: member, Access: "read"}})
@@ -309,7 +309,7 @@ func TestScanErrorsAreNotSticky(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, owner)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("failed scan created a channel")
 			}
-			list, err := s.List()
+			list, err := s.List(owner)
 			if err != nil || len(list) != 0 {
 				t.Fatalf("retry %+v %v", list, err)
 			}
@@ -331,11 +331,11 @@ func TestScanErrorsAreNotSticky(t *testing.T) {
 		}
 		return os.ReadDir(path)
 	}
-	if _, err := s.List(); err == nil || !strings.Contains(err.Error(), "owner blocked") {
+	if _, err := s.List(owner); err == nil || !strings.Contains(err.Error(), "owner blocked") {
 		t.Fatal(err)
 	}
 	readDir = os.ReadDir
-	list, err := s.List()
+	list, err := s.List(owner)
 	if err != nil || len(list) != 1 || list[0].Chat != "chat" {
 		t.Fatalf("retry %+v %v", list, err)
 	}

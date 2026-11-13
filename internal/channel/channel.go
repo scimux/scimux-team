@@ -342,8 +342,9 @@ func (s *Store) Get(owner, chatID string) (Info, error) {
 	return s.loaded(ch)
 }
 
-// List returns every channel, ordered by owner and then chat.
-func (s *Store) List() ([]Info, error) {
+// List returns the channels seat owns or belongs to, ordered by owner and
+// then chat. The seat is ignored until the list is limited to that seat.
+func (s *Store) List(seat string) ([]Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.usable(); err != nil {

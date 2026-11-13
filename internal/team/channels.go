@@ -86,7 +86,7 @@ func (s *server) listChannels(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		all, err := s.channels.List()
+		all, err := s.channels.List(g.seat.ID)
 		if err != nil {
 			return err
 		}
