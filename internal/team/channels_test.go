@@ -843,34 +843,149 @@ func TestMutationStopsWhenTheSeatIsRevokedDuringTheBody(t *testing.T) {
 	}
 }
 
-func TestDamagedChannelDoesNotHideAnother(t *testing.T) {
-	p := newParty(t, channel.Options{})
-	ownerID := inst(0x11)
-	owner := p.seat(t, 0x11, "seat a")
-	p.create(t, owner, ownerID, "alpha", "title-alpha")
-	p.create(t, owner, ownerID, "beta", "title-beta")
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/beta/mirror", owner, `{"entries":[{"key":"keep","body":{"n":1}}]}`)
-	mirror := filepath.Join(p.dir, "channels", ownerID, "alpha", "mirror.jsonl")
-	f, err := os.OpenFile(mirror, os.O_APPEND|os.O_WRONLY, 0)
+func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
+	ownerID, otherID := inst(0x11), inst(0x22)
+	damages := []struct {
+		name string
+		file string
+		body string
+	}{
+		{"meta", "channel.json", `{"title":"PLANTED-SECRET"}`},
+		{"mirror", "mirror.jsonl", "{\"secret-marker\":true}\n"},
+		{"comments", "comments.jsonl", "{\"secret-marker\":true}\n"},
+	}
+	for _, damage := range damages {
+		t.Run(damage.name, func(t *testing.T) {
+			p := newParty(t, channel.Options{})
+			owner := p.seat(t, 0x11, "seat a")
+			other := p.seat(t, 0x22, "seat b")
+			p.create(t, owner, ownerID, "alpha", "title-alpha")
+			p.create(t, other, otherID, "beta", "title-beta")
+			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"entries":[{"key":"keep","body":{"n":1}}]}`)
+			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/comments", other, `{"entries":[{"key":"note","body":true}]}`)
+			path := filepath.Join(p.dir, "channels", ownerID, "alpha", damage.file)
+			if err := os.WriteFile(path, []byte(damage.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The open store cached the healthy record. A restart is what
+			// makes the damaged file visible.
+			if err := p.st.Close(); err != nil {
+				t.Fatal(err)
+			}
+			st, err := channel.Open(p.dir, channel.Options{Now: fixedNow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { st.Close() })
+			p.h.channels = st
+			status, _, body := call(p.h, http.MethodGet, "/v1/channels", other, "")
+			if status != http.StatusOK || !bytes.Contains(body, []byte(`"chat":"beta"`)) || bytes.Contains(body, []byte(`"chat":"alpha"`)) || bytes.Contains(body, []byte("PLANTED-SECRET")) || bytes.Contains(body, []byte("secret-marker")) || bytes.Contains(body, []byte("title-alpha")) {
+				t.Fatalf("list %d %s", status, body)
+			}
+			got := callOK(t, p.h, http.MethodGet, "/v1/channels/"+otherID+"/beta/mirror", other, "")
+			if !strings.Contains(got, `"key":"keep"`) || !strings.Contains(got, `"last":1`) {
+				t.Fatalf("mirror %s", got)
+			}
+			got = callOK(t, p.h, http.MethodGet, "/v1/channels/"+otherID+"/beta/comments", other, "")
+			if !strings.Contains(got, `"key":"note"`) {
+				t.Fatalf("comments %s", got)
+			}
+			status, _, body = call(p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"entries":[{"key":"more","body":2}]}`)
+			if status != http.StatusOK || !bytes.Contains(body, []byte(`"seq":2`)) {
+				t.Fatalf("append %d %s", status, body)
+			}
+			status, _, body = call(p.h, http.MethodPut, "/v1/channels/"+otherID+"/beta", other, `{"title":"title-beta-2"}`)
+			if status != http.StatusOK || !bytes.Contains(body, []byte(`"title":"title-beta-2"`)) {
+				t.Fatalf("rename %d %s", status, body)
+			}
+			alpha := "/v1/channels/" + ownerID + "/alpha"
+			for _, route := range []struct {
+				method, path, payload string
+			}{
+				{http.MethodPut, alpha, `{"title":"nope"}`},
+				{http.MethodDelete, alpha, ""},
+				{http.MethodPut, alpha + "/members", `{"members":[]}`},
+				{http.MethodGet, alpha + "/mirror", ""},
+				{http.MethodPost, alpha + "/mirror", `{"entries":[{"key":"k","body":1}]}`},
+				{http.MethodGet, alpha + "/comments", ""},
+				{http.MethodPost, alpha + "/comments", `{"entries":[{"key":"k","body":1}]}`},
+			} {
+				status, _, body = call(p.h, route.method, route.path, owner, route.payload)
+				if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("PLANTED-SECRET")) || bytes.Contains(body, []byte("secret-marker")) || bytes.Contains(body, []byte("title-alpha")) {
+					t.Fatalf("%s %s %d %s", route.method, route.path, status, body)
+				}
+			}
+		})
+	}
+}
+
+func TestServeStartsWithADamagedChannel(t *testing.T) {
+	restoreSeams(t)
+	dir := t.TempDir()
+	reg := openRegistry(t, dir, registry.Options{Name: "relay a", Now: fixedNow, Entropy: &seqReader{}})
+	st, err := channel.Open(dir, channel.Options{Now: fixedNow, Entropy: &seqReader{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteString("{\"secret-marker\":true}\n"); err != nil {
+	ownerID, otherID := inst(0x11), inst(0x22)
+	code, _, err := reg.Issue()
+	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
-	status, _, body := call(p.h, http.MethodGet, "/v1/channels", owner, "")
-	if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("secret-marker")) || bytes.Contains(body, []byte("title-alpha")) {
-		t.Fatalf("list %d %s", status, body)
+	ownerTok, _, err := reg.Register(code, ownerID, "seat a")
+	if err != nil {
+		t.Fatal(err)
 	}
-	status, _, body = call(p.h, http.MethodGet, "/v1/channels/"+ownerID+"/alpha/mirror", owner, "")
-	if status != http.StatusInternalServerError || string(body) != `{"error":"internal"}` || bytes.Contains(body, []byte("secret-marker")) {
-		t.Fatalf("alpha %d %s", status, body)
+	code, _, err = reg.Issue()
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := callOK(t, p.h, http.MethodGet, "/v1/channels/"+ownerID+"/beta/mirror", owner, "")
-	if !strings.Contains(got, `"key":"keep"`) || !strings.Contains(got, `"last":1`) {
-		t.Fatalf("beta %s", got)
+	otherTok, _, err := reg.Register(code, otherID, "seat b")
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, _, err := st.Put(ownerID, "alpha", "title-alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Put(otherID, "beta", "title-beta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Append(otherID, "beta", channel.Mirror, otherID, []channel.NewEntry{{Key: "keep", Body: json.RawMessage(`{"n":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "channels", ownerID, "alpha", "channel.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entropy = bytes.NewReader(bytes.Repeat([]byte{0x11}, 64))
+	srv := startServer(t, dir, "127.0.0.1:0", "-name", "relay a")
+	client := &http.Client{Timeout: 2 * time.Second}
+	base := "http://" + srv.addr
+	status, resp := getAuth(t, client, base+"/v1/hello", "")
+	if status != http.StatusOK || !strings.Contains(resp, `"protocol":1`) {
+		t.Fatalf("hello %d %s", status, resp)
+	}
+	status, resp = getAuth(t, client, base+"/v1/channels", otherTok)
+	if status != http.StatusOK || !strings.Contains(resp, `"chat":"beta"`) || strings.Contains(resp, `"chat":"alpha"`) || strings.Contains(resp, "title-alpha") {
+		t.Fatalf("list %d %s", status, resp)
+	}
+	status, resp = getAuth(t, client, base+"/v1/channels/"+otherID+"/beta/mirror", otherTok)
+	if status != http.StatusOK || !strings.Contains(resp, `"key":"keep"`) {
+		t.Fatalf("beta %d %s", status, resp)
+	}
+	status, resp = getAuth(t, client, base+"/v1/channels/"+ownerID+"/alpha/mirror", ownerTok)
+	if status != http.StatusInternalServerError || resp != `{"error":"internal"}` {
+		t.Fatalf("alpha %d %s", status, resp)
+	}
+	if strings.Contains(srv.out.String(), "title-alpha") || strings.Contains(srv.errb.String(), "title-alpha") || strings.Contains(srv.out.String(), ownerTok) {
+		t.Fatalf("stdout %q stderr %q", srv.out.String(), srv.errb.String())
+	}
+	srv.wait(t)
 }
 
 func TestHandlerWithoutAStoreIsInternal(t *testing.T) {

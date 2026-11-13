@@ -334,8 +334,9 @@ func TestDamagedRecordFailsOnlyThatChannel(t *testing.T) {
 	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), secret) {
 		t.Fatal(err)
 	}
-	if _, err := s.List(); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), secret) {
-		t.Fatal(err)
+	list, err := s.List()
+	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" || list[0].MirrorLast != 1 {
+		t.Fatalf("list %+v %v", list, err)
 	}
 	entries, last, _, err := s.Read(other, "chat", Mirror, 0)
 	if err != nil || last != 1 || len(entries) != 1 || entries[0].Key != "ok" {
@@ -505,7 +506,7 @@ func TestReconcileContinuesAfterADamagedActiveOwner(t *testing.T) {
 	err := s.Reconcile(func(id string) bool {
 		return id == first || id == second || id == kept || id == member
 	})
-	if !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "PLANTED-SECRET") {
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "channels", gone, "chat")); !errors.Is(err, os.ErrNotExist) {
@@ -519,6 +520,28 @@ func TestReconcileContinuesAfterADamagedActiveOwner(t *testing.T) {
 		if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) {
 			t.Fatal(owner, err)
 		}
+		planted := fileBytes(t, filepath.Join(dir, "channels", owner, "chat", metaName))
+		if !bytes.Equal(planted, []byte(`{"title":"PLANTED-SECRET"}`)) {
+			t.Fatalf("damaged file rewritten %s", planted)
+		}
+	}
+
+	saveSeams(t)
+	blocked := filepath.Join(dir, "channels", kept, "chat", metaName)
+	openMeta = func(path string) (*os.File, error) {
+		if path == blocked {
+			return nil, errors.New("meta blocked")
+		}
+		return os.Open(path)
+	}
+	s.Close()
+	s = openStore(t, dir, Options{})
+	err = s.Reconcile(func(id string) bool { return id == kept || id == member })
+	if err == nil || !strings.Contains(err.Error(), "meta blocked") || errors.Is(err, errDamaged) {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "channels", gone, "chat")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("inactive owner survived a read error")
 	}
 }
 
@@ -539,8 +562,9 @@ func TestListAndGetIsolateMetaAndCommentDamage(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = openStore(t, dir, Options{})
-	if _, err := s.List(); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "PLANTED-SECRET") {
-		t.Fatal(err)
+	list, err := s.List()
+	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" {
+		t.Fatalf("list %+v %v", list, err)
 	}
 	if _, err := s.Get(other, "chat"); err != nil {
 		t.Fatal(err)
@@ -557,9 +581,106 @@ func TestListAndGetIsolateMetaAndCommentDamage(t *testing.T) {
 	if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "not-json") {
 		t.Fatal(err)
 	}
+	list, err = s.List()
+	if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" {
+		t.Fatalf("comment list %+v %v", list, err)
+	}
 	entries, last, _, err := s.Read(other, "chat", Comments, 0)
 	if err != nil || last != 0 || len(entries) != 0 {
 		t.Fatalf("sibling comments %+v %v", entries, err)
+	}
+}
+
+func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
+	owner, other := id(0x11), id(0x22)
+	member := id(0x33)
+	kinds := []struct {
+		name  string
+		plant func(t *testing.T, dir string)
+	}{
+		{"meta", func(t *testing.T, dir string) {
+			t.Helper()
+			path := filepath.Join(dir, "channels", owner, "chat", metaName)
+			if err := os.WriteFile(path, []byte(`{"title":"PLANTED-SECRET"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"mirror", func(t *testing.T, dir string) {
+			t.Helper()
+			path := filepath.Join(dir, "channels", owner, "chat", mirrorName)
+			if err := os.WriteFile(path, []byte(string(fileBytes(t, path))+"not-json\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"comments", func(t *testing.T, dir string) {
+			t.Helper()
+			path := filepath.Join(dir, "channels", owner, "chat", commentsName)
+			if err := os.WriteFile(path, []byte("not-json\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, kind := range kinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(16))})
+			if _, created, err := s.Put(owner, "chat", "owned"); err != nil || !created {
+				t.Fatal(err, created)
+			}
+			if _, created, err := s.Put(other, "chat", "theirs"); err != nil || !created {
+				t.Fatal(err, created)
+			}
+			if _, err := s.SetMembers(owner, "chat", []Member{{Seat: other, Access: "read"}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`1`)}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Append(other, "chat", Mirror, other, []NewEntry{{Key: "ok", Body: json.RawMessage(`{"n":1}`)}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Append(other, "chat", Comments, other, []NewEntry{{Key: "c", Body: json.RawMessage(`true`)}}); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			kind.plant(t, dir)
+
+			s = openStore(t, dir, Options{})
+			list, err := s.List()
+			if err != nil || len(list) != 1 || list[0].Owner != other || list[0].Chat != "chat" || list[0].Title != "theirs" || list[0].MirrorLast != 1 || list[0].CommentsLast != 1 {
+				t.Fatalf("list %+v %v", list, err)
+			}
+			info, err := s.Get(other, "chat")
+			if err != nil || info.Title != "theirs" || info.MirrorLast != 1 {
+				t.Fatalf("get %+v %v", info, err)
+			}
+			entries, last, more, err := s.Read(other, "chat", Mirror, 0)
+			if err != nil || more || last != 1 || len(entries) != 1 || entries[0].Key != "ok" || string(entries[0].Body) != `{"n":1}` {
+				t.Fatalf("read %+v %v", entries, err)
+			}
+			res, last, err := s.Append(other, "chat", Mirror, other, []NewEntry{{Key: "next", Body: json.RawMessage(`2`)}})
+			if err != nil || last != 2 || len(res) != 1 || res[0].Duplicate || res[0].Seq != 2 {
+				t.Fatalf("append %+v %d %v", res, last, err)
+			}
+			if _, err := s.SetMembers(other, "chat", []Member{{Seat: member, Access: "write"}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Get(owner, "chat"); !errors.Is(err, errDamaged) || strings.Contains(err.Error(), "PLANTED-SECRET") || strings.Contains(err.Error(), "not-json") {
+				t.Fatal(err)
+			}
+			if _, _, _, err := s.Read(owner, "chat", Mirror, 0); !errors.Is(err, errDamaged) {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Append(owner, "chat", Comments, owner, []NewEntry{{Key: "nope", Body: json.RawMessage(`1`)}}); !errors.Is(err, errDamaged) {
+				t.Fatal(err)
+			}
+			if _, err := s.SetMembers(owner, "chat", []Member{{Seat: member, Access: "read"}}); !errors.Is(err, errDamaged) {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Put(owner, "chat", "renamed"); !errors.Is(err, errDamaged) {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
