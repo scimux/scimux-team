@@ -44,6 +44,12 @@ func (s *server) putSeat(w http.ResponseWriter, r *http.Request) {
 		}
 		var renErr error
 		seat, renErr = s.reg.Rename(authed.ID, req.Name)
+		// Rename replays the journal and can apply a revoke before it
+		// accepts or refuses the name. That seat is already inactive.
+		if err := s.reconcile(nil); err != nil {
+			s.noteCleanup(nil)
+			return err
+		}
 		return renErr
 	})
 	s.finish(w, err, http.StatusOK, seatJSON{ID: seat.ID, Name: seat.Name})
@@ -59,6 +65,12 @@ func (s *server) deleteSeat(w http.ResponseWriter, r *http.Request) {
 			beforeRevokeSeat()
 		}
 		if _, err := revokeSeatFn(s.reg, seat.ID); err != nil {
+			// RevokeSeat replays other revokes before it can fail. Those
+			// seats are already inactive.
+			if recErr := s.reconcile(nil); recErr != nil {
+				s.noteCleanup(nil)
+				return recErr
+			}
 			return err
 		}
 		if err := s.reconcile(nil); err != nil {

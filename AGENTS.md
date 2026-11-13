@@ -95,9 +95,12 @@ go run ./tools/covercheck
   entry when one exists. There is no flag for any of these.
 - `Serve` opens the channel store and reconciles it before the listener
   binds. A request whose `Refresh` reports revoked ids reconciles before
-  it does anything else. `Register` can report that the id it just bound
-  was revoked a moment earlier; that id is treated as inactive for the
-  cleanup, so the new seat inherits nothing. A cleanup that fails stays
+  it does anything else, including when `Refresh` fails after applying a
+  revoke. `Register`, `Rename` and `RevokeSeat` do the same for a revoke
+  they apply while replaying, even when that call then fails. `Register`
+  can report that the id it just bound was revoked a moment earlier; that
+  id is treated as inactive for the cleanup, so the new seat inherits
+  nothing. A cleanup that fails stays
   due, together with those ids. Every later request tries it again before
   it asks the registry, and answers internal if it fails again. The mark
   is cleared only when reconcile returns no error. Registration during

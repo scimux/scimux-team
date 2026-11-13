@@ -161,14 +161,16 @@ func (s *server) withRegistry(fn func() error) error {
 		return err
 	}
 	revoked, err := s.reg.Refresh()
+	// A line after a revoke can make Refresh fail. The revoke is already
+	// applied, so the clean-up runs before that error is returned.
+	if len(revoked) > 0 {
+		if recErr := s.reconcile(nil); recErr != nil {
+			s.noteCleanup(nil)
+			return recErr
+		}
+	}
 	if err != nil {
 		return err
-	}
-	if len(revoked) > 0 {
-		if err := s.reconcile(nil); err != nil {
-			s.noteCleanup(nil)
-			return err
-		}
 	}
 	return fn()
 }
@@ -246,17 +248,18 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		var revoked []string
 		var regErr error
 		token, revoked, regErr = s.reg.Register(req.JoinCode, req.InstallationID, req.Name)
-		if regErr != nil {
-			return regErr
-		}
 		// The id can be active again and still listed here: Register replays
 		// a revoke and then binds the same id. Skip it so the new seat
-		// inherits nothing.
+		// inherits nothing. A refused registration binds nothing, and the
+		// same list is the seats whose revoke this call applied.
 		if len(revoked) > 0 {
 			if err := s.reconcile(revoked); err != nil {
 				s.noteCleanup(revoked)
 				return err
 			}
+		}
+		if regErr != nil {
+			return regErr
 		}
 		srv = s.reg.Server()
 		return nil
