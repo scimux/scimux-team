@@ -12,7 +12,8 @@ import (
 
 // logState is one channel log. The index is built on first use and then
 // extended by Refresh, so a line is parsed once. It keeps no entry body.
-// Read loads the line from the file.
+// Read loads the line from the file. The file itself is not held open
+// between store calls. end is the offset after the last indexed line.
 type logState struct {
 	path  string
 	kind  Log
@@ -21,6 +22,8 @@ type logState struct {
 	byKey map[string]uint64
 	last  uint64
 	size  int64
+	end   int64
+	ready bool
 	bad   error
 }
 
@@ -44,18 +47,34 @@ func (lg *logState) create() error {
 		return err
 	}
 	lg.j = j
+	lg.remember()
+	lg.release()
 	return nil
 }
 
-func (lg *logState) close() {
-	if lg.j != nil {
-		_ = lg.j.Close()
-		lg.j = nil
+// release closes the log file. The index stays, so the next call can
+// reopen at end instead of parsing the file again.
+func (lg *logState) release() {
+	if lg.j == nil {
+		return
 	}
+	_ = closeJournal(lg.j)
+	lg.j = nil
+}
+
+func (lg *logState) remember() {
+	lg.end = lg.j.Offset()
+	lg.ready = true
+}
+
+func (lg *logState) close() {
+	lg.release()
 	lg.idx = nil
 	lg.byKey = map[string]uint64{}
 	lg.last = 0
 	lg.size = 0
+	lg.end = 0
+	lg.ready = false
 	lg.bad = nil
 }
 
@@ -87,6 +106,10 @@ func (s *Store) Append(owner, chatID string, kind Log, author string, entries []
 	if err := s.ensureLog(lg); err != nil {
 		return nil, 0, err
 	}
+	defer func() {
+		lg.remember()
+		lg.release()
+	}()
 	if beforeLogUpdate != nil {
 		beforeLogUpdate()
 	}
@@ -134,6 +157,10 @@ func (s *Store) Read(owner, chatID string, kind Log, after uint64) ([]Entry, uin
 	if err := s.ensureLog(lg); err != nil {
 		return nil, 0, false, err
 	}
+	defer func() {
+		lg.remember()
+		lg.release()
+	}()
 	out := []Entry{}
 	sum := 0
 	more := false
@@ -149,7 +176,7 @@ func (s *Store) Read(owner, chatID string, kind Log, after uint64) ([]Entry, uin
 			more = true
 			break
 		}
-		line, err := lg.j.ReadLine(ix.off)
+		line, err := readLogLine(lg.j, ix.off)
 		if err != nil {
 			return nil, 0, false, err
 		}
@@ -174,21 +201,25 @@ func (s *Store) ensureLog(lg *logState) error {
 	if lg.bad != nil {
 		return lg.bad
 	}
-	if lg.j == nil {
-		j, err := openJournal(lg.path)
-		if err != nil {
-			return err
-		}
-		lg.j = j
+	var err error
+	if lg.ready {
+		lg.j, err = openJournalAt(lg.path, lg.end)
+	} else {
+		lg.j, err = openJournal(lg.path)
 	}
-	err := lg.j.Refresh(func(off int64, line []byte) error {
+	if err != nil {
+		lg.j = nil
+		return err
+	}
+	err = lg.j.Refresh(func(off int64, line []byte) error {
 		return lg.absorb(off, line)
 	})
+	lg.remember()
+	if errors.Is(err, errDamaged) {
+		lg.bad = errDamaged
+	}
 	if err != nil {
-		if errors.Is(err, errDamaged) {
-			lg.bad = errDamaged
-			return lg.bad
-		}
+		lg.release()
 		return err
 	}
 	return nil

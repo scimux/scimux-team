@@ -75,8 +75,9 @@ go run ./tools/covercheck
   The server starts with damaged channels on disk. A seat's list loads
   only the logs of channels that seat owns or belongs to. The index of a
   log keeps no entry body. A line that changes after it was indexed fails
-  a read of that channel. New directories are mode `0700` and new files
-  are mode `0600`.
+  a read of that channel. A channel log is not held open between calls.
+  The server that holds `server.lock` is the only writer of those logs.
+  New directories are mode `0700` and new files are mode `0600`.
 - Limits are constants: 4 MiB per entry body, 16 MiB per request, 256
   MiB per log, 1000 channels per owner and 200 members. A read returns
   at most 256 entries and at most 16 MiB of bodies, and at least one

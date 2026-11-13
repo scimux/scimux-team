@@ -7,8 +7,10 @@
 //
 // channel.json is the only file that is ever rewritten, and only by writing
 // a temporary file in the same directory and renaming it into place. The
-// logs are journals: a torn tail is discarded on the next append, and a
-// damaged complete line is a hard error for that channel alone. List leaves
+// logs are journals and are not held open between calls. The server that
+// holds server.lock is their only writer. A torn tail is discarded on the
+// next append, and a damaged complete line is a hard error for that
+// channel alone. List leaves
 // a damaged channel out and loads logs only for channels the seat owns or
 // belongs to. The index of a log keeps no entry body. A line that changes
 // after it was indexed fails a read of that channel. Reconcile still
@@ -603,9 +605,11 @@ func (s *Store) loaded(ch *chat) (Info, error) {
 	if err := s.ensureLog(ch.mirror); err != nil {
 		return Info{}, err
 	}
+	ch.mirror.release()
 	if err := s.ensureLog(ch.comments); err != nil {
 		return Info{}, err
 	}
+	ch.comments.release()
 	return s.info(ch), nil
 }
 

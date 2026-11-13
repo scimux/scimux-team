@@ -60,7 +60,9 @@ list and does not stop the server or any other channel; requests for
 that channel itself fail. A seat's list loads only the logs of channels
 that seat owns or belongs to. The index of a log keeps no entry body.
 A line that changes after it was indexed fails a read of that channel.
-New directories are mode `0700` and new files are mode `0600`.
+A log file is not held open between calls. The server that holds
+`server.lock` is the only writer of a channel log. New directories are
+mode `0700` and new files are mode `0600`.
 
 Limits are constants. An entry body is at most 4 MiB, a request is at
 most 16 MiB and a log is at most 256 MiB. An owner has at most 1000
