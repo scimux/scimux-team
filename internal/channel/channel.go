@@ -241,7 +241,7 @@ func Open(stateDir string, opts Options) (*Store, error) {
 	if !info.IsDir() {
 		return nil, errors.New("channel: state path is not a directory")
 	}
-	if opts.MaxLogBytes < 0 || opts.MaxChannelsPerOwner < 0 {
+	if opts.MaxLogBytes < 0 || opts.MaxChannelsPerOwner < 0 || opts.MaxBlobBytes < 0 || opts.MaxBlobsPerChannel < 0 {
 		return nil, ErrInvalid
 	}
 	if opts.MaxLogBytes == 0 {
@@ -249,6 +249,12 @@ func Open(stateDir string, opts Options) (*Store, error) {
 	}
 	if opts.MaxChannelsPerOwner == 0 {
 		opts.MaxChannelsPerOwner = defaultMaxChannels
+	}
+	if opts.MaxBlobBytes == 0 {
+		opts.MaxBlobBytes = defaultMaxBlobBytes
+	}
+	if opts.MaxBlobsPerChannel == 0 {
+		opts.MaxBlobsPerChannel = defaultMaxBlobs
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
