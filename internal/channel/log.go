@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"io"
+	"os"
 
 	"github.com/scimux/scimux-team/internal/journal"
 )
@@ -204,11 +205,19 @@ func (s *Store) ensureLog(lg *logState) error {
 	var err error
 	if lg.ready {
 		lg.j, err = openJournalAt(lg.path, lg.end)
+	} else if _, statErr := lstatPath(lg.path); errors.Is(statErr, os.ErrNotExist) {
+		// Opening would create the file and look like an empty log.
+		lg.bad = errDamaged
+		return errDamaged
 	} else {
 		lg.j, err = openJournal(lg.path)
 	}
 	if err != nil {
 		lg.j = nil
+		if errors.Is(err, os.ErrNotExist) {
+			lg.bad = errDamaged
+			return errDamaged
+		}
 		return err
 	}
 	err = lg.j.Refresh(func(off int64, line []byte) error {

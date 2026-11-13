@@ -6,16 +6,20 @@
 // file past its limit is ErrQuota.
 //
 // channel.json is the only file that is ever rewritten, and only by writing
-// a temporary file in the same directory and renaming it into place. The
-// logs are journals and are not held open between calls. The server that
-// holds server.lock is their only writer. A torn tail is discarded on the
-// next append, and a damaged complete line is a hard error for that
-// channel alone. List leaves
-// a damaged channel out and loads logs only for channels the seat owns or
-// belongs to. The index of a log keeps no entry body. A line that changes
-// after it was indexed fails a read of that channel. Reconcile still
-// removes a channel whose owner is not active, and leaves a damaged
-// channel of an active owner in place without reporting an error.
+// a temporary file in the same directory and renaming it into place.
+// Creation writes both logs first and channel.json last, so a crash in
+// between leaves a directory that is not a channel. A directory without
+// channel.json is not found and not listed, and creating the channel
+// there starts a new generation with empty logs. The logs are journals
+// and are not held open between calls. The server that holds server.lock
+// is their only writer. A torn tail is discarded on the next append. A
+// damaged complete line, and a missing log file, are a hard error for
+// that channel alone. List leaves a damaged channel out and loads logs
+// only for channels the seat owns or belongs to. The index of a log keeps
+// no entry body. A line that changes after it was indexed fails a read of
+// that channel. Reconcile still removes a channel whose owner is not
+// active, and leaves a damaged channel of an active owner in place
+// without reporting an error.
 package channel
 
 import (
@@ -544,19 +548,26 @@ func (s *Store) createChat(ch *chat, m *metaFile) error {
 			return err
 		}
 	}
+	// Logs first and channel.json last. Leftover log bytes are not the
+	// new channel's history: a crash can leave them without channel.json.
+	if err := createFreshLog(ch.mirror); err != nil {
+		s.discardNew(ch)
+		return err
+	}
+	if err := createFreshLog(ch.comments); err != nil {
+		s.discardNew(ch)
+		return err
+	}
 	if err := s.saveMeta(ch, m); err != nil {
 		s.discardNew(ch)
 		return err
 	}
-	if err := ch.mirror.create(); err != nil {
-		s.discardNew(ch)
-		return err
-	}
-	if err := ch.comments.create(); err != nil {
-		s.discardNew(ch)
-		return err
-	}
 	return nil
+}
+
+func createFreshLog(lg *logState) error {
+	_ = os.Remove(lg.path)
+	return lg.create()
 }
 
 func (s *Store) discardNew(ch *chat) {
@@ -663,6 +674,10 @@ func (s *Store) scan() error {
 				continue
 			}
 			id := k.Name()
+			// A directory without channel.json is not a channel.
+			if _, err := lstatPath(filepath.Join(s.root, owner, id, metaName)); errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			s.byKey[chatKey(owner, id)] = newChat(s.root, owner, id)
 		}
 	}
@@ -733,9 +748,6 @@ func chatKey(owner, chatID string) string { return owner + "/" + chatID }
 func readMeta(path string) (*metaFile, error) {
 	f, err := openMeta(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errDamaged
-		}
 		return nil, err
 	}
 	defer f.Close()

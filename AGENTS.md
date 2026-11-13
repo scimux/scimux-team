@@ -73,12 +73,14 @@ go run ./tools/covercheck
   owner. The channel object carries `members` only for the owner.
 - `channel.json` holds the title, the generation, the created time and
   the member list. It is the only file that is rewritten, and only by a
-  temporary file and a rename. The logs are append-only journals. A blob
-  is one file under `blobs/<id>`, created once through a temporary file
-  and a rename, and not rewritten. It is opaque bytes with no media type
-  and no file name. A damaged `channel.json` or a damaged log is a hard
-  error for that channel. A damaged blob is a hard error for that blob
-  only; the channel and its other blobs keep working. `List` leaves a
+  temporary file and a rename. Creation writes it last, after both logs,
+  so a crash in between leaves a directory that is not a channel. A chat
+  directory without `channel.json` is not found, is not listed, and
+  creating the channel there starts a new generation with empty logs.
+  The logs are append-only journals. A missing log is damage, the same
+  hard error as a damaged log line. A damaged `channel.json` or a damaged
+  log is a hard error for that channel. A damaged blob is a hard error
+  for that blob only; the channel and its other blobs keep working. `List` leaves a
   damaged channel out, and `Reconcile` does not fail on it. `Reconcile`
   still removes a damaged channel whose owner is not active. The server
   starts with damaged channels on disk. A seat's list loads only the
@@ -140,7 +142,8 @@ go run ./tools/covercheck
   registering again.
 - **Logs are append-only and never rewritten in place.** A torn final line is
   ignored and removed before the next append. A damaged complete line is a
-  hard error, never skipped. Removing a channel removes its files,
+  hard error, never skipped. A missing log file is that same hard error.
+  Removing a channel removes its files,
   including its blobs; that is the one deletion.
 - **Nothing shared is logged.** No request log, no entry body, title, name,
   token, join code, blob byte or blob ID on stdout or stderr.
