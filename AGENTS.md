@@ -23,7 +23,8 @@ go run ./tools/covercheck
   `internal/*` packages are leaf subsystems and never import `internal/team`.
 - `internal/invite` generates and parses join codes. The domains are
   `scimux-team/join-verifier/v1` and `scimux-team/join-id/v1`.
-- `internal/journal` is the shared append-only line file.
+- `internal/journal` is the shared append-only line file. `OpenAt` opens
+  an existing journal at an offset and does not read the bytes before it.
 - `internal/registry` is the server identity, the join codes and the seats.
   They live in `registry.jsonl` inside the state directory.
 - `internal/channel` stores each channel under `channels/<owner>/<chat>/`

@@ -109,10 +109,43 @@ func Open(path string) (*File, error) {
 	return &File{path: path, f: f}, nil
 }
 
-// OpenAt opens an existing journal at offset. The checks arrive with the
-// implementation; this stub keeps the package compiling.
+// OpenAt opens an existing journal and starts at offset. offset is the
+// first byte that has not been applied, so the byte before it is a newline
+// unless offset is zero. A missing path, a path that is not a regular
+// file, a negative offset, or an offset past the end is refused.
 func OpenAt(path string, offset int64) (*File, error) {
-	return nil, nil
+	if path == "" {
+		return nil, errors.New("journal: empty path")
+	}
+	if offset < 0 {
+		return nil, errors.New("journal: negative offset")
+	}
+	info, err := lstatPath(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("journal: %s is not a regular file", path)
+	}
+	if info.Size() < offset {
+		return nil, fmt.Errorf("journal: %s is shorter than offset %d", path, offset)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		var b [1]byte
+		if _, err := f.ReadAt(b[:], offset-1); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if b[0] != '\n' {
+			_ = f.Close()
+			return nil, fmt.Errorf("journal: %s offset %d is not after a newline", path, offset)
+		}
+	}
+	return &File{path: path, f: f, offset: offset}, nil
 }
 
 // Close closes the file. A second call is a no-op.
