@@ -833,6 +833,139 @@ func TestEmptyLineIsALine(t *testing.T) {
 	}
 }
 
+func TestOpenAtStartsAtAnOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "j")
+	if err := os.WriteFile(path, []byte("one\ntorn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAt("", 0); err == nil {
+		t.Fatal("empty path")
+	}
+	if _, err := OpenAt(path, -1); err == nil {
+		t.Fatal("negative")
+	}
+	if _, err := OpenAt(filepath.Join(dir, "missing"), 0); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if _, err := OpenAt(dir, 0); err == nil {
+		t.Fatal("directory")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAt(link, 0); err == nil {
+		t.Fatal("symlink")
+	}
+	if _, err := OpenAt(path, 100); err == nil {
+		t.Fatal("shorter than offset")
+	}
+	if _, err := OpenAt(path, 2); err == nil {
+		t.Fatal("byte before offset is not a newline")
+	}
+
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := OpenAt(empty, 0)
+	if err != nil || f.Offset() != 0 {
+		t.Fatalf("empty %v %v", f, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err = OpenAt(path, 0)
+	if err != nil || f.Offset() != 0 {
+		t.Fatal(err, f)
+	}
+	var lines []string
+	if err := f.Refresh(func(_ int64, line []byte) error {
+		lines = append(lines, string(line))
+		return nil
+	}); err != nil || len(lines) != 1 || lines[0] != "one" || f.Offset() != 4 {
+		t.Fatalf("refresh %v off %d err %v", lines, f.Offset(), err)
+	}
+	got, err := f.ReadLine(0)
+	if err != nil || string(got) != "one" {
+		t.Fatalf("ReadLine %q %v", got, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err = OpenAt(path, 4)
+	if err != nil || f.Offset() != 4 {
+		t.Fatal(err, f)
+	}
+	n := 0
+	if err := f.Refresh(func(int64, []byte) error { n++; return nil }); err != nil || n != 0 || f.Offset() != 4 {
+		t.Fatalf("torn refresh n %d off %d err %v", n, f.Offset(), err)
+	}
+	if err := f.Update(
+		func(int64, []byte) error { return nil },
+		func() ([][]byte, error) { return [][]byte{[]byte("two")}, nil },
+	); err != nil || f.Offset() != 8 {
+		t.Fatalf("update off %d err %v", f.Offset(), err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(mustRead(t, path)) != "one\ntwo\n" {
+		t.Fatalf("file %q", mustRead(t, path))
+	}
+
+	// At the end of a complete file the previous byte is the newline.
+	done := filepath.Join(dir, "done")
+	if err := os.WriteFile(done, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err = OpenAt(done, 4)
+	if err != nil || f.Offset() != 4 {
+		t.Fatal(err, f)
+	}
+	if err := f.Refresh(func(int64, []byte) error { return errors.New("no line") }); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+}
+
+func TestOpenAtReportsOpenAndReadErrors(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := lstatPath
+	t.Cleanup(func() { lstatPath = restore })
+	lstatPath = func(string) (os.FileInfo, error) { return info, nil }
+	if _, err := OpenAt(filepath.Join(dir, "missing"), 0); err == nil {
+		t.Fatal("open")
+	}
+
+	short := filepath.Join(dir, "short")
+	if err := os.WriteFile(short, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lstatPath = func(string) (os.FileInfo, error) { return sizeInfo{info, 100}, nil }
+	if _, err := OpenAt(short, 50); err == nil {
+		t.Fatal("read")
+	}
+}
+
+type sizeInfo struct {
+	os.FileInfo
+	size int64
+}
+
+func (s sizeInfo) Size() int64 { return s.size }
+
 func openJournal(t *testing.T, path string) *File {
 	t.Helper()
 	f, err := Open(path)

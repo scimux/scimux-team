@@ -109,6 +109,12 @@ func Open(path string) (*File, error) {
 	return &File{path: path, f: f}, nil
 }
 
+// OpenAt opens an existing journal at offset. The checks arrive with the
+// implementation; this stub keeps the package compiling.
+func OpenAt(path string, offset int64) (*File, error) {
+	return nil, nil
+}
+
 // Close closes the file. A second call is a no-op.
 func (f *File) Close() error {
 	if f == nil || f.f == nil {
