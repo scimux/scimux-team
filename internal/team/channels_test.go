@@ -1169,6 +1169,9 @@ func TestRevokeBetweenRefreshAndTheCallIsCleanedUp(t *testing.T) {
 		if status != http.StatusForbidden || string(body) != `{"error":"join_refused"}` {
 			t.Fatalf("refused %d %s", status, body)
 		}
+		// The proof registers the same id. The seam belongs to the
+		// refused call only; a second revoke of that id is unknown.
+		beforeRegister = nil
 		assertRevokedSeatIsGone(t, p, ownerID, otherTok, thirdTok)
 	})
 
