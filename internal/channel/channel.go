@@ -79,6 +79,7 @@ var (
 	openJournal   = journal.Open
 	openJournalAt = journal.OpenAt
 	closeJournal  = func(f *journal.File) error { return f.Close() }
+	readLogLine   = func(f *journal.File, offset int64) ([]byte, error) { return f.ReadLine(offset) }
 	marshalValue  = func(v any) ([]byte, error) {
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)

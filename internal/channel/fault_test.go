@@ -520,6 +520,30 @@ func TestAppendMarshalFailureStoresNothing(t *testing.T) {
 	}
 }
 
+func TestReadFailureIsNotDamage(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	owner := id(0x11)
+	if _, _, err := s.Put(owner, "chat", "feat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(owner, "chat", Mirror, owner, []NewEntry{{Key: "k", Body: json.RawMessage(`{"a":1}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	saveSeams(t)
+	readLogLine = func(*journal.File, int64) ([]byte, error) {
+		return nil, errors.New("read blocked")
+	}
+	if _, _, _, err := s.Read(owner, "chat", Mirror, 0); err == nil || errors.Is(err, errDamaged) || !strings.Contains(err.Error(), "read blocked") {
+		t.Fatal(err)
+	}
+	readLogLine = func(f *journal.File, offset int64) ([]byte, error) { return f.ReadLine(offset) }
+	entries, last, _, err := s.Read(owner, "chat", Mirror, 0)
+	if err != nil || last != 1 || len(entries) != 1 || string(entries[0].Body) != `{"a":1}` {
+		t.Fatalf("restored %+v %v", entries, err)
+	}
+}
+
 func TestStoreCallsLeaveNoLogOpen(t *testing.T) {
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(32))})
