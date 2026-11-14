@@ -80,8 +80,10 @@ go run ./tools/covercheck
   the member list. It is the only file that is rewritten, and only by a
   temporary file and a rename. Creation writes it last, after both logs,
   so a crash in between leaves a directory that is not a channel. A chat
-  directory without `channel.json` is not found, is not listed, and
-  creating the channel there starts a new generation with empty logs.
+  directory without `channel.json` is not found and is not listed.
+  Creating the channel there removes that directory first and starts a
+  new generation with empty logs and no other file. If that removal
+  fails, creation fails and leaves no channel.
   The logs are append-only journals. A missing log is damage, the same
   hard error as a damaged log line. A damaged `channel.json` or a damaged
   log is a hard error for that channel. A damaged blob is a hard error
@@ -112,7 +114,9 @@ go run ./tools/covercheck
   it asks the registry, and answers internal if it fails again. The mark
   is cleared only when reconcile returns no error. Registration during
   that failure spends no code. Reconciliation removes every channel whose
-  owner is not active and strips every member that is not active.
+  owner is not active, strips every member that is not active, and
+  removes every chat directory that has no `channel.json`, whoever the
+  owner is. A failed removal is an error and stays due.
 - Fuzz targets are `FuzzParse` in `internal/invite` and `FuzzJournal` in
   `internal/journal`, one in each package.
 

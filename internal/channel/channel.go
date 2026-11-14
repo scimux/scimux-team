@@ -9,17 +9,20 @@
 // a temporary file in the same directory and renaming it into place.
 // Creation writes both logs first and channel.json last, so a crash in
 // between leaves a directory that is not a channel. A directory without
-// channel.json is not found and not listed, and creating the channel
-// there starts a new generation with empty logs. The logs are journals
-// and are not held open between calls. The server that holds server.lock
-// is their only writer. A torn tail is discarded on the next append. A
-// damaged complete line, and a missing log file, are a hard error for
-// that channel alone. List leaves a damaged channel out and loads logs
-// only for channels the seat owns or belongs to. The index of a log keeps
-// no entry body. A line that changes after it was indexed fails a read of
-// that channel. Reconcile still removes a channel whose owner is not
-// active, and leaves a damaged channel of an active owner in place
-// without reporting an error.
+// channel.json is not found and not listed. Creating the channel there
+// removes that directory first and starts a new generation with empty
+// logs and no other file. If that removal fails, creation fails and
+// leaves no channel. Reconcile removes every such directory, whoever
+// the owner is. A removal that fails is an error and stays due. The logs
+// are journals and are not held open between calls. The server that holds
+// server.lock is their only writer. A torn tail is discarded on the next
+// append. A damaged complete line, and a missing log file, are a hard
+// error for that channel alone. List leaves a damaged channel out and
+// loads logs only for channels the seat owns or belongs to. The index of
+// a log keeps no entry body. A line that changes after it was indexed
+// fails a read of that channel. Reconcile still removes a channel whose
+// owner is not active, and leaves a damaged channel of an active owner
+// in place without reporting an error.
 package channel
 
 import (
@@ -260,12 +263,16 @@ type chat struct {
 
 // Store is the channels tree under one state directory.
 type Store struct {
-	root    string
-	opts    Options
-	mu      sync.Mutex
-	byKey   map[string]*chat
-	scanned bool
-	closed  bool
+	root  string
+	opts  Options
+	mu    sync.Mutex
+	byKey map[string]*chat
+	// leftovers are chat directories scan saw with no channel.json.
+	// They are not channels. Put drops one when it replaces it, and
+	// Reconcile removes the rest. A path stays here when removal fails.
+	leftovers []string
+	scanned   bool
+	closed    bool
 }
 
 // Open prepares the channels directory inside stateDir. The directory must
@@ -511,8 +518,11 @@ func (s *Store) SetMembers(owner, chatID string, members []Member) (Info, error)
 	return s.info(ch), nil
 }
 
-// Reconcile removes every channel whose owner is not active and removes
-// every member that is not active. It is the only clean-up operation.
+// Reconcile removes every channel whose owner is not active, removes
+// every member that is not active, and removes every chat directory
+// that has no channel.json. Such a directory is not a channel, whoever
+// owns it. A removal that fails is returned, and that directory stays
+// due. It is the only clean-up operation.
 func (s *Store) Reconcile(active func(id string) bool) error {
 	if active == nil {
 		return ErrInvalid
@@ -558,6 +568,15 @@ func (s *Store) Reconcile(active func(id string) bool) error {
 		next.Members = filtered
 		remember(&first, s.saveMeta(ch, &next))
 	}
+	kept := make([]string, 0, len(s.leftovers))
+	for _, dir := range s.leftovers {
+		if err := removeAll(dir); err != nil {
+			remember(&first, err)
+			kept = append(kept, dir)
+			continue
+		}
+	}
+	s.leftovers = kept
 	return first
 }
 
@@ -575,6 +594,16 @@ func remember(first *error, err error) {
 }
 
 func (s *Store) createChat(ch *chat, m *metaFile) error {
+	// The directory is not a channel yet: scan did not see channel.json.
+	// A leftover directory still holds its old files. Remove it first.
+	// If it stays, create nothing. A missing path is not a leftover, and
+	// neither is a path whose parent is not a directory: mkdirAll already
+	// fails those without creating a channel.
+	if info, err := lstatPath(ch.dir); err == nil && info.IsDir() {
+		if err := removeAll(ch.dir); err != nil {
+			return err
+		}
+	}
 	if err := mkdirAll(ch.dir, dirPerm); err != nil {
 		return err
 	}
@@ -598,7 +627,22 @@ func (s *Store) createChat(ch *chat, m *metaFile) error {
 		s.discardNew(ch)
 		return err
 	}
+	// A failure above leaves the path recorded so Reconcile can retry.
+	s.dropLeftover(ch.dir)
 	return nil
+}
+
+// dropLeftover forgets a directory createChat has replaced with a channel.
+func (s *Store) dropLeftover(dir string) {
+	n := 0
+	for _, d := range s.leftovers {
+		if d == dir {
+			continue
+		}
+		s.leftovers[n] = d
+		n++
+	}
+	s.leftovers = s.leftovers[:n]
 }
 
 func createFreshLog(lg *logState) error {
@@ -696,6 +740,7 @@ func (s *Store) scan() error {
 	if err != nil {
 		return err
 	}
+	var pending []string
 	for _, e := range owners {
 		if !e.IsDir() || !validOwner(e.Name()) {
 			continue
@@ -712,11 +757,13 @@ func (s *Store) scan() error {
 			id := k.Name()
 			// A directory without channel.json is not a channel.
 			if _, err := lstatPath(filepath.Join(s.root, owner, id, metaName)); errors.Is(err, os.ErrNotExist) {
+				pending = append(pending, filepath.Join(s.root, owner, id))
 				continue
 			}
 			s.byKey[chatKey(owner, id)] = newChat(s.root, owner, id)
 		}
 	}
+	s.leftovers = pending
 	s.scanned = true
 	return nil
 }
