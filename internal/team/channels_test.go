@@ -40,7 +40,7 @@ func TestChannelAccess(t *testing.T) {
 
 	main := "/v1/channels/" + ownerID + "/main"
 	gone := "/v1/channels/" + ownerID + "/gone"
-	one := `{"entries":[{"key":"k","body":{"n":1}}]}`
+	one := `{"generation":"` + gen1 + `","entries":[{"key":"k","body":{"n":1}}]}`
 	title := `{"title":"title-main"}`
 	memberBody := `{"members":[{"seat":"` + writeID + `","access":"write"},{"seat":"` + readID + `","access":"read"}]}`
 
@@ -86,7 +86,7 @@ func TestChannelAccess(t *testing.T) {
 		{http.MethodGet, main + "/comments", "", "", http.StatusUnauthorized, "unauthorized"},
 
 		{http.MethodPost, main + "/comments", owner, one, http.StatusOK, ""},
-		{http.MethodPost, main + "/comments", write, `{"entries":[{"key":"w","body":{"n":2}}]}`, http.StatusOK, ""},
+		{http.MethodPost, main + "/comments", write, `{"generation":"` + gen1 + `","entries":[{"key":"w","body":{"n":2}}]}`, http.StatusOK, ""},
 		{http.MethodPost, main + "/comments", read, one, http.StatusForbidden, "forbidden"},
 		{http.MethodPost, main + "/comments", stranger, one, http.StatusNotFound, "not_found"},
 		{http.MethodPost, main + "/comments", "", one, http.StatusUnauthorized, "unauthorized"},
@@ -252,7 +252,7 @@ func TestChannelJSONShapes(t *testing.T) {
 		t.Fatalf("write view %s", asWrite)
 	}
 
-	posted := callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/a-chat/mirror", owner, `{"entries":[{"key":"k/1","body":{"a":"<b>"}}]}`)
+	posted := callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/a-chat/mirror", owner, `{"generation":"`+gen1+`","entries":[{"key":"k/1","body":{"a":"<b>"}}]}`)
 	if posted != `{"generation":"`+gen1+`","results":[{"key":"k/1","seq":1,"duplicate":false}],"last":1}` {
 		t.Fatalf("append %s", posted)
 	}
@@ -315,16 +315,16 @@ func TestChannelValidationAndLimits(t *testing.T) {
 		}
 	}
 
-	status, _, body := call(p.h, http.MethodPost, base+"/mirror", owner, `{"entries":[{"key":"`+strings.Repeat("a", 200)+`","body":null}]}`)
+	status, _, body := call(p.h, http.MethodPost, base+"/mirror", owner, `{"generation":"`+gen1+`","entries":[{"key":"`+strings.Repeat("a", 200)+`","body":null}]}`)
 	if status != http.StatusOK {
 		t.Fatalf("long key %d %s", status, body)
 	}
 	for _, entries := range []string{
-		`{"entries":[]}`,
-		`{"entries":[{"key":"","body":1}]}`,
-		`{"entries":[{"key":"a b","body":1}]}`,
-		`{"entries":[{"key":"` + strings.Repeat("a", 201) + `","body":1}]}`,
-		`{"entries":[{"key":"k","body":1},{"key":"bad key","body":2}]}`,
+		`{"generation":"` + gen1 + `","entries":[]}`,
+		`{"generation":"` + gen1 + `","entries":[{"key":"","body":1}]}`,
+		`{"generation":"` + gen1 + `","entries":[{"key":"a b","body":1}]}`,
+		`{"generation":"` + gen1 + `","entries":[{"key":"` + strings.Repeat("a", 201) + `","body":1}]}`,
+		`{"generation":"` + gen1 + `","entries":[{"key":"k","body":1},{"key":"bad key","body":2}]}`,
 		`{"entries":[{"key":"k","body":1,"extra":true}]}`,
 		`{"entries":[{"key":"k","body":1}],"extra":1}`,
 		`{"entries":[{"key":"k","body":1}]}{"more":true}`,
@@ -343,13 +343,13 @@ func TestChannelValidationAndLimits(t *testing.T) {
 	for i := range wide {
 		wide[i] = fmt.Sprintf(`{"key":"k%03d","body":1}`, i)
 	}
-	status, _, body = call(p.h, http.MethodPost, base+"/mirror", owner, `{"entries":[`+strings.Join(wide, ",")+`]}`)
+	status, _, body = call(p.h, http.MethodPost, base+"/mirror", owner, `{"generation":"`+gen1+`","entries":[`+strings.Join(wide, ",")+`]}`)
 	if status != http.StatusBadRequest || string(body) != `{"error":"bad_request"}` {
 		t.Fatalf("batch %d %s", status, body)
 	}
 
 	over := jsonText(4<<20 + 1)
-	status, _, body = call(p.h, http.MethodPost, base+"/comments", owner, `{"entries":[{"key":"ok","body":1},{"key":"big","body":`+over+`}]}`)
+	status, _, body = call(p.h, http.MethodPost, base+"/comments", owner, `{"generation":"`+gen1+`","entries":[{"key":"ok","body":1},{"key":"big","body":`+over+`}]}`)
 	if status != http.StatusRequestEntityTooLarge || string(body) != `{"error":"too_large"}` {
 		t.Fatalf("entry %d %s", status, body)
 	}
@@ -418,11 +418,11 @@ func TestAppendIsAtomicAndIdempotent(t *testing.T) {
 	mirror := "/v1/channels/" + ownerID + "/main/mirror"
 	comments := "/v1/channels/" + ownerID + "/main/comments"
 
-	first := callOK(t, p.h, http.MethodPost, mirror, owner, `{"entries":[{"key":"same","body":{"n":1}},{"key":"same","body":{"n":2}}]}`)
+	first := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"same","body":{"n":1}},{"key":"same","body":{"n":2}}]}`)
 	if first != `{"generation":"`+gen1+`","results":[{"key":"same","seq":1,"duplicate":false},{"key":"same","seq":1,"duplicate":true}],"last":1}` {
 		t.Fatalf("batch dup %s", first)
 	}
-	again := callOK(t, p.h, http.MethodPost, mirror, owner, `{"entries":[{"key":"same","body":{"n":9}}]}`)
+	again := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"same","body":{"n":9}}]}`)
 	if again != `{"generation":"`+gen1+`","results":[{"key":"same","seq":1,"duplicate":true}],"last":1}` {
 		t.Fatalf("retry %s", again)
 	}
@@ -432,8 +432,8 @@ func TestAppendIsAtomicAndIdempotent(t *testing.T) {
 	}
 
 	// Comment keys are per author: the same key from two seats is two entries.
-	ownerComment := callOK(t, p.h, http.MethodPost, comments, owner, `{"entries":[{"key":"same","body":1}]}`)
-	writeComment := callOK(t, p.h, http.MethodPost, comments, write, `{"entries":[{"key":"same","body":2}]}`)
+	ownerComment := callOK(t, p.h, http.MethodPost, comments, owner, `{"generation":"`+gen1+`","entries":[{"key":"same","body":1}]}`)
+	writeComment := callOK(t, p.h, http.MethodPost, comments, write, `{"generation":"`+gen1+`","entries":[{"key":"same","body":2}]}`)
 	if !strings.Contains(ownerComment, `"duplicate":false`) || !strings.Contains(writeComment, `"seq":2,"duplicate":false`) {
 		t.Fatalf("per author %s %s", ownerComment, writeComment)
 	}
@@ -444,10 +444,10 @@ func TestAppendIsAtomicAndIdempotent(t *testing.T) {
 	qOwner := q.seat(t, 0x11, "seat a")
 	q.create(t, qOwner, ownerID, "main", "title-main")
 	qMirror := "/v1/channels/" + ownerID + "/main/mirror"
-	if status, _, body := call(q.h, http.MethodPost, qMirror, qOwner, `{"entries":[{"key":"a","body":1}]}`); status != http.StatusOK {
+	if status, _, body := call(q.h, http.MethodPost, qMirror, qOwner, `{"generation":"`+gen1+`","entries":[{"key":"a","body":1}]}`); status != http.StatusOK {
 		t.Fatalf("fill %d %s", status, body)
 	}
-	status, _, body := call(q.h, http.MethodPost, qMirror, qOwner, `{"entries":[{"key":"b","body":1},{"key":"c","body":1}]}`)
+	status, _, body := call(q.h, http.MethodPost, qMirror, qOwner, `{"generation":"`+gen1+`","entries":[{"key":"b","body":1},{"key":"c","body":1}]}`)
 	if status != http.StatusInsufficientStorage || string(body) != `{"error":"quota"}` {
 		t.Fatalf("quota %d %s", status, body)
 	}
@@ -455,7 +455,7 @@ func TestAppendIsAtomicAndIdempotent(t *testing.T) {
 	if strings.Contains(got, `"key":"b"`) || strings.Contains(got, `"key":"c"`) || !strings.Contains(got, `"last":1`) {
 		t.Fatalf("quota wrote %s", got)
 	}
-	dup := callOK(t, q.h, http.MethodPost, qMirror, qOwner, `{"entries":[{"key":"a","body":9}]}`)
+	dup := callOK(t, q.h, http.MethodPost, qMirror, qOwner, `{"generation":"`+gen1+`","entries":[{"key":"a","body":9}]}`)
 	if !strings.Contains(dup, `"seq":1,"duplicate":true`) {
 		t.Fatalf("dup at limit %s", dup)
 	}
@@ -472,6 +472,203 @@ func TestAppendIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAppendWithTheRightGeneration(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID, writeID := inst(0x11), inst(0x22)
+	owner := p.seat(t, 0x11, "seat a")
+	write := p.seat(t, 0x22, "seat b")
+	p.create(t, owner, ownerID, "main", "title-main")
+	p.members(t, owner, ownerID, "main", writeID, "")
+	mirror := "/v1/channels/" + ownerID + "/main/mirror"
+	comments := "/v1/channels/" + ownerID + "/main/comments"
+
+	posted := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"m","body":{"n":1}}]}`)
+	if posted != `{"generation":"`+gen1+`","results":[{"key":"m","seq":1,"duplicate":false}],"last":1}` {
+		t.Fatalf("mirror %s", posted)
+	}
+	got := callOK(t, p.h, http.MethodGet, mirror, write, "")
+	if !strings.Contains(got, `"key":"m"`) || !strings.Contains(got, `"generation":"`+gen1+`"`) || !strings.Contains(got, `"last":1`) || !strings.Contains(got, `"body":{"n":1}`) {
+		t.Fatalf("mirror read %s", got)
+	}
+	noted := callOK(t, p.h, http.MethodPost, comments, write, `{"generation":"`+gen1+`","entries":[{"key":"c","body":{"n":2}}]}`)
+	if noted != `{"generation":"`+gen1+`","results":[{"key":"c","seq":1,"duplicate":false}],"last":1}` {
+		t.Fatalf("comments %s", noted)
+	}
+	got = callOK(t, p.h, http.MethodGet, comments, owner, "")
+	if !strings.Contains(got, `"key":"c"`) || !strings.Contains(got, `"generation":"`+gen1+`"`) || !strings.Contains(got, `"last":1`) || !strings.Contains(got, `"body":{"n":2}`) {
+		t.Fatalf("comments read %s", got)
+	}
+
+	// A retry of a stored key that names the same generation is the first entry.
+	again := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"m","body":{"n":9}}]}`)
+	if again != `{"generation":"`+gen1+`","results":[{"key":"m","seq":1,"duplicate":true}],"last":1}` {
+		t.Fatalf("retry %s", again)
+	}
+	got = callOK(t, p.h, http.MethodGet, mirror, owner, "")
+	if !strings.Contains(got, `"body":{"n":1}`) || strings.Contains(got, `"n":9`) || !strings.Contains(got, `"last":1`) {
+		t.Fatalf("retry stored %s", got)
+	}
+}
+
+func TestAppendOfAMalformedGenerationStoresNothing(t *testing.T) {
+	ownerID := inst(0x11)
+	cases := []struct {
+		name, body string
+	}{
+		{"missing", `{"entries":[{"key":"k","body":1}]}`},
+		{"empty", `{"generation":"","entries":[{"key":"k","body":1}]}`},
+		{"short", `{"generation":"000102030405060","entries":[{"key":"k","body":1}]}`},
+		{"long", `{"generation":"00010203040506070","entries":[{"key":"k","body":1}]}`},
+		{"upper", `{"generation":"000102030405060A","entries":[{"key":"k","body":1}]}`},
+	}
+	for _, path := range []string{"mirror", "comments"} {
+		for _, tc := range cases {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				p := newParty(t, channel.Options{})
+				owner := p.seat(t, 0x11, "seat a")
+				p.create(t, owner, ownerID, "main", "title-main")
+				log := "/v1/channels/" + ownerID + "/main/" + path
+				status, _, got := call(p.h, http.MethodPost, log, owner, tc.body)
+				if status != http.StatusBadRequest || string(got) != `{"error":"bad_request"}` {
+					t.Fatalf("%s %d %s", tc.name, status, got)
+				}
+				empty := `{"generation":"` + gen1 + `","entries":[],"last":0,"more":false}`
+				if after := callOK(t, p.h, http.MethodGet, log, owner, ""); after != empty {
+					t.Fatalf("stored %s", after)
+				}
+			})
+		}
+	}
+}
+
+func TestAppendOfANonStringGenerationStoresNothing(t *testing.T) {
+	ownerID := inst(0x11)
+	body := `{"generation":1,"entries":[{"key":"k","body":1}]}`
+	for _, path := range []string{"mirror", "comments"} {
+		t.Run(path, func(t *testing.T) {
+			p := newParty(t, channel.Options{})
+			owner := p.seat(t, 0x11, "seat a")
+			p.create(t, owner, ownerID, "main", "title-main")
+			log := "/v1/channels/" + ownerID + "/main/" + path
+			status, _, got := call(p.h, http.MethodPost, log, owner, body)
+			if status != http.StatusBadRequest || string(got) != `{"error":"bad_request"}` {
+				t.Fatalf("%s %d %s", path, status, got)
+			}
+			empty := `{"generation":"` + gen1 + `","entries":[],"last":0,"more":false}`
+			if after := callOK(t, p.h, http.MethodGet, log, owner, ""); after != empty {
+				t.Fatalf("stored %s", after)
+			}
+		})
+	}
+}
+
+func TestAppendOfAnotherGenerationStoresNothing(t *testing.T) {
+	ownerID := inst(0x11)
+	body := `{"generation":"` + gen2 + `","entries":[{"key":"k","body":1}]}`
+	for _, path := range []string{"mirror", "comments"} {
+		t.Run(path, func(t *testing.T) {
+			p := newParty(t, channel.Options{})
+			owner := p.seat(t, 0x11, "seat a")
+			p.create(t, owner, ownerID, "main", "title-main")
+			log := "/v1/channels/" + ownerID + "/main/" + path
+			status, _, got := call(p.h, http.MethodPost, log, owner, body)
+			if status != http.StatusConflict || string(got) != `{"error":"stale_generation"}` {
+				t.Fatalf("%s %d %s", path, status, got)
+			}
+			empty := `{"generation":"` + gen1 + `","entries":[],"last":0,"more":false}`
+			if after := callOK(t, p.h, http.MethodGet, log, owner, ""); after != empty {
+				t.Fatalf("stored %s", after)
+			}
+		})
+	}
+}
+
+func TestAppendAfterRecreateRejectsTheOldGeneration(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID, memberID := inst(0x11), inst(0x22)
+	owner := p.seat(t, 0x11, "seat a")
+	member := p.seat(t, 0x22, "seat b")
+	p.create(t, owner, ownerID, "main", "title-old")
+	p.members(t, owner, ownerID, "main", "", memberID)
+	status, _, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main", owner, "")
+	if status != http.StatusNoContent {
+		t.Fatalf("delete %d %s", status, body)
+	}
+	p.create(t, owner, ownerID, "main", "title-new")
+	p.members(t, owner, ownerID, "main", "", memberID)
+	mirror := "/v1/channels/" + ownerID + "/main/mirror"
+	status, _, body = call(p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"old","body":1}]}`)
+	if status != http.StatusConflict || string(body) != `{"error":"stale_generation"}` {
+		t.Fatalf("old %d %s", status, body)
+	}
+	empty := `{"generation":"` + gen2 + `","entries":[],"last":0,"more":false}`
+	for _, token := range []string{owner, member} {
+		if got := callOK(t, p.h, http.MethodGet, mirror, token, ""); got != empty {
+			t.Fatalf("mirror %s", got)
+		}
+	}
+	posted := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen2+`","entries":[{"key":"new","body":2}]}`)
+	if posted != `{"generation":"`+gen2+`","results":[{"key":"new","seq":1,"duplicate":false}],"last":1}` {
+		t.Fatalf("new %s", posted)
+	}
+}
+
+func TestGenerationCheckFollowsAccess(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID, readID := inst(0x11), inst(0x33)
+	owner := p.seat(t, 0x11, "seat a")
+	read := p.seat(t, 0x33, "seat c")
+	stranger := p.seat(t, 0x44, "seat d")
+	p.create(t, owner, ownerID, "main", "title-main")
+	p.members(t, owner, ownerID, "main", "", readID)
+	stale := `{"generation":"` + gen2 + `","entries":[{"key":"k","body":1}]}`
+	mirror := "/v1/channels/" + ownerID + "/main/mirror"
+	comments := "/v1/channels/" + ownerID + "/main/comments"
+	status, _, body := call(p.h, http.MethodPost, mirror, "", stale)
+	if status != http.StatusUnauthorized || string(body) != `{"error":"unauthorized"}` {
+		t.Fatalf("no token %d %s", status, body)
+	}
+	status, _, body = call(p.h, http.MethodPost, mirror, stranger, stale)
+	if status != http.StatusNotFound || string(body) != `{"error":"not_found"}` {
+		t.Fatalf("stranger %d %s", status, body)
+	}
+	status, _, body = call(p.h, http.MethodPost, mirror, read, stale)
+	if status != http.StatusForbidden || string(body) != `{"error":"forbidden"}` {
+		t.Fatalf("read mirror %d %s", status, body)
+	}
+	status, _, body = call(p.h, http.MethodPost, comments, read, stale)
+	if status != http.StatusForbidden || string(body) != `{"error":"forbidden"}` {
+		t.Fatalf("read comments %d %s", status, body)
+	}
+	empty := `{"generation":"` + gen1 + `","entries":[],"last":0,"more":false}`
+	if got := callOK(t, p.h, http.MethodGet, mirror, owner, ""); got != empty {
+		t.Fatalf("mirror changed %s", got)
+	}
+	if got := callOK(t, p.h, http.MethodGet, comments, owner, ""); got != empty {
+		t.Fatalf("comments changed %s", got)
+	}
+}
+
+func TestStaleRetryIsNotADuplicate(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID := inst(0x11)
+	owner := p.seat(t, 0x11, "seat a")
+	p.create(t, owner, ownerID, "main", "title-main")
+	mirror := "/v1/channels/" + ownerID + "/main/mirror"
+	first := callOK(t, p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"same","body":{"n":1}}]}`)
+	if first != `{"generation":"`+gen1+`","results":[{"key":"same","seq":1,"duplicate":false}],"last":1}` {
+		t.Fatalf("store %s", first)
+	}
+	status, _, body := call(p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen2+`","entries":[{"key":"same","body":{"n":9}}]}`)
+	if status != http.StatusConflict || string(body) != `{"error":"stale_generation"}` {
+		t.Fatalf("stale retry %d %s", status, body)
+	}
+	got := callOK(t, p.h, http.MethodGet, mirror, owner, "")
+	if !strings.Contains(got, `"body":{"n":1}`) || strings.Contains(got, `"n":9`) || !strings.Contains(got, `"last":1`) {
+		t.Fatalf("log %s", got)
+	}
+}
+
 func TestReadAfterAndMore(t *testing.T) {
 	p := newParty(t, channel.Options{})
 	ownerID := inst(0x11)
@@ -482,10 +679,10 @@ func TestReadAfterAndMore(t *testing.T) {
 	for i := 0; i < 256; i++ {
 		batch = append(batch, fmt.Sprintf(`{"key":"k%03d","body":%d}`, i, i))
 	}
-	if status, _, body := call(p.h, http.MethodPost, mirror, owner, `{"entries":[`+strings.Join(batch, ",")+`]}`); status != http.StatusOK {
+	if status, _, body := call(p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[`+strings.Join(batch, ",")+`]}`); status != http.StatusOK {
 		t.Fatalf("batch %d %s", status, body)
 	}
-	if status, _, body := call(p.h, http.MethodPost, mirror, owner, `{"entries":[{"key":"tail","body":true}]}`); status != http.StatusOK {
+	if status, _, body := call(p.h, http.MethodPost, mirror, owner, `{"generation":"`+gen1+`","entries":[{"key":"tail","body":true}]}`); status != http.StatusOK {
 		t.Fatalf("tail %d %s", status, body)
 	}
 	var page readResp
@@ -518,7 +715,7 @@ func TestGenerationRestartsAfterDelete(t *testing.T) {
 	if !strings.Contains(first, `"generation":"`+gen1+`"`) {
 		t.Fatalf("first %s", first)
 	}
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/mirror", owner, `{"entries":[{"key":"k","body":1}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/mirror", owner, `{"generation":"`+gen1+`","entries":[{"key":"k","body":1}]}`)
 	status, hdr, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main", owner, "")
 	if status != http.StatusNoContent || len(body) != 0 || hdr.Get("Content-Type") != "application/json" {
 		t.Fatalf("delete %d %s", status, body)
@@ -935,7 +1132,7 @@ func TestServePrintsNoChannelContent(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("put %d %s", status, resp)
 	}
-	status, resp = reqJSON(t, client, http.MethodPost, base+"/v1/channels/"+inst(0x11)+"/main/mirror", created.Token, `{"entries":[{"key":"key-alpha","body":{"marked":"body-alpha"}}]}`)
+	status, resp = reqJSON(t, client, http.MethodPost, base+"/v1/channels/"+inst(0x11)+"/main/mirror", created.Token, `{"generation":"3131313131313131","entries":[{"key":"key-alpha","body":{"marked":"body-alpha"}}]}`)
 	if status != http.StatusOK {
 		t.Fatalf("post %d %s", status, resp)
 	}
@@ -1009,8 +1206,8 @@ func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
 			other := p.seat(t, 0x22, "seat b")
 			p.create(t, owner, ownerID, "alpha", "title-alpha")
 			p.create(t, other, otherID, "beta", "title-beta")
-			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"entries":[{"key":"keep","body":{"n":1}}]}`)
-			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/comments", other, `{"entries":[{"key":"note","body":true}]}`)
+			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"generation":"`+gen2+`","entries":[{"key":"keep","body":{"n":1}}]}`)
+			callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/comments", other, `{"generation":"`+gen2+`","entries":[{"key":"note","body":true}]}`)
 			path := filepath.Join(p.dir, "channels", ownerID, "alpha", damage.file)
 			if err := os.WriteFile(path, []byte(damage.body), 0o600); err != nil {
 				t.Fatal(err)
@@ -1038,7 +1235,7 @@ func TestSecondSeatUsesItsChannelWhileAnotherIsDamaged(t *testing.T) {
 			if !strings.Contains(got, `"key":"note"`) {
 				t.Fatalf("comments %s", got)
 			}
-			status, _, body = call(p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"entries":[{"key":"more","body":2}]}`)
+			status, _, body = call(p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/mirror", other, `{"generation":"`+gen2+`","entries":[{"key":"more","body":2}]}`)
 			if status != http.StatusOK || !bytes.Contains(body, []byte(`"seq":2`)) {
 				t.Fatalf("append %d %s", status, body)
 			}
@@ -1183,7 +1380,7 @@ func TestConcurrentAppendsOverHTTP(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			body := fmt.Sprintf(`{"entries":[{"key":"k%d","body":{"n":%d}}]}`, i, i)
+			body := fmt.Sprintf(`{"generation":"%s","entries":[{"key":"k%d","body":{"n":%d}}]}`, gen1, i, i)
 			status, _, got := call(p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/mirror", owner, body)
 			if status != http.StatusOK {
 				errc <- fmt.Sprintf("%d %s", status, got)
@@ -1711,8 +1908,8 @@ func plantedChannel(t *testing.T, plant func(t *testing.T, dir, owner string)) (
 	strangerTok = p.seat(t, 0x33, "seat c")
 	p.create(t, ownerTok, ownerID, "room", "title-room")
 	p.members(t, ownerTok, ownerID, "room", memberID, "")
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/mirror", ownerTok, `{"entries":[{"key":"k","body":1}]}`)
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/comments", memberTok, `{"entries":[{"key":"c","body":2}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/mirror", ownerTok, `{"generation":"`+gen1+`","entries":[{"key":"k","body":1}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/room/comments", memberTok, `{"generation":"`+gen1+`","entries":[{"key":"c","body":2}]}`)
 	plant(t, p.dir, ownerID)
 	reopenChannels(t, p)
 	return p, ownerID, ownerTok, memberTok, strangerTok

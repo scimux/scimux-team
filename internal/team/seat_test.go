@@ -22,7 +22,7 @@ func TestRenameSeat(t *testing.T) {
 	token := p.seat(t, 0x11, "seat a")
 	other := p.seat(t, 0x22, "seat b")
 	p.create(t, token, id, "main", "title-main")
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+id+"/main/mirror", token, `{"entries":[{"key":"k","body":{"n":1}}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+id+"/main/mirror", token, `{"generation":"`+gen1+`","entries":[{"key":"k","body":{"n":1}}]}`)
 
 	before := journalOf(t, p.reg)
 	status, hdr, body := call(p.h, http.MethodPut, "/v1/seat", token, `{"name":"seat a"}`)
@@ -180,7 +180,7 @@ func TestLeaveSeat(t *testing.T) {
 	p.create(t, owner, ownerID, "alpha", "title-alpha")
 	p.create(t, other, otherID, "beta", "title-beta")
 	p.members(t, other, otherID, "beta", memberID, ownerID)
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/comments", member, `{"entries":[{"key":"note","body":{"kept":true}}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+otherID+"/beta/comments", member, `{"generation":"`+gen2+`","entries":[{"key":"note","body":{"kept":true}}]}`)
 	data := []byte("png-bytes")
 	id := blobID(data)
 	if created, err := p.st.PutBlob(otherID, "beta", id, data); err != nil || !created {
@@ -343,7 +343,7 @@ func TestMemberCanLeaveAChannel(t *testing.T) {
 	stranger := p.seat(t, 0x44, "seat d")
 	p.create(t, owner, ownerID, "main", "title-main")
 	p.members(t, owner, ownerID, "main", writeID, readID)
-	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/comments", write, `{"entries":[{"key":"note","body":{"kept":true}}]}`)
+	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/comments", write, `{"generation":"`+gen1+`","entries":[{"key":"note","body":{"kept":true}}]}`)
 	data := []byte("png-bytes")
 	id := blobID(data)
 	if created, err := p.st.PutBlob(ownerID, "main", id, data); err != nil || !created {

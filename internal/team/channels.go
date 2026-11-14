@@ -54,7 +54,8 @@ type membersReq struct {
 }
 
 type appendReq struct {
-	Entries []channel.NewEntry `json:"entries"`
+	Generation string             `json:"generation"`
+	Entries    []channel.NewEntry `json:"entries"`
 }
 
 type appendResp struct {
