@@ -219,6 +219,12 @@ func (s *server) postLog(w http.ResponseWriter, r *http.Request, kind channel.Lo
 		if err != nil {
 			return err
 		}
+		if !validGeneration(req.Generation) {
+			return channel.ErrInvalid
+		}
+		if req.Generation != g.info.Generation {
+			return errStaleGeneration
+		}
 		results, last, err := s.channels.Append(owner, chat, kind, g.seat.ID, req.Entries)
 		if err != nil {
 			return err
@@ -398,6 +404,21 @@ func screenMembers(reg *registry.Registry, owner string, members []channel.Membe
 		}
 	}
 	return nil
+}
+
+// validGeneration reports whether s is the 16 lower-case hex digits a
+// channel generation uses. Anything else is a malformed append.
+func validGeneration(s string) bool {
+	if len(s) != 16 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 func validID(s string) bool {

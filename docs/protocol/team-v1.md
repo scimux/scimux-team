@@ -43,6 +43,7 @@ An error response is `{"error":"<code>"}` with one of these codes:
 | 403 | `forbidden` | The caller can see the channel but may not do this |
 | 404 | `not_found` | No such route, or no channel the caller can see |
 | 409 | `already_registered` | The installation ID is registered |
+| 409 | `stale_generation` | An append names another generation than the channel has |
 | 413 | `too_large` | Body over 16 MiB, an entry body over 4 MiB, or a blob over 4 MiB |
 | 422 | `unknown_member` | A member list names a seat that is not registered |
 | 500 | `internal` | The server could not read or write its state |
@@ -228,9 +229,20 @@ The two logs of a channel have the same shape:
 ### Append: `POST` on a log
 
 ```json
-{"entries":[{"key":"0/17","body":{"any":"json"}}]}
+{"generation":"<16 hex>","entries":[{"key":"0/17","body":{"any":"json"}}]}
 ```
 
+- `generation` is required on both logs. It is 16 lower-case hexadecimal
+  digits. A missing or malformed value is `bad_request`.
+- When it is not the generation of the channel, the server answers
+  `stale_generation` and stores nothing.
+- This check is part of the request content, so it runs after
+  authentication, visibility and permission, as section 2 orders the
+  checks. A caller that cannot see the channel still gets `not_found`,
+  and a caller without the right still gets `forbidden`.
+- The comparison and the append run under the same lock as deleting and
+  creating the channel. An append cannot pass the check and then land in
+  a channel created after the check.
 - 1 to 256 entries.
 - `key` matches `[A-Za-z0-9._:/-]{1,200}`. It makes a retry safe. In the
   mirror a key is unique per channel. In the comments a key is unique per
@@ -248,6 +260,10 @@ Answers `200`:
 ```json
 {"generation":"<16 hex>","results":[{"key":"0/17","seq":43,"duplicate":false}],"last":43}
 ```
+
+A client that receives `stale_generation` treats the channel as replaced.
+It discards its read positions for that channel and does not send the
+batch again.
 
 ### Read: `GET` on a log
 

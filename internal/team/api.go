@@ -132,9 +132,10 @@ func newHTTPServer(h http.Handler) *http.Server {
 // errNotFound, errUnauthorized and errForbidden are handler results. They
 // are not store failures: finish writes them as the constant protocol bodies.
 var (
-	errNotFound     = errors.New("not found")
-	errUnauthorized = errors.New("unauthorized")
-	errForbidden    = errors.New("forbidden")
+	errNotFound        = errors.New("not found")
+	errUnauthorized    = errors.New("unauthorized")
+	errForbidden       = errors.New("forbidden")
+	errStaleGeneration = errors.New("stale generation")
 )
 
 // ServeHTTP rejects a path that is not already in cleaned form, then
@@ -340,6 +341,8 @@ func writeMapped(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "bad_request")
 	case errors.Is(err, registry.ErrAlreadyRegistered):
 		writeError(w, http.StatusConflict, "already_registered")
+	case errors.Is(err, errStaleGeneration):
+		writeError(w, http.StatusConflict, "stale_generation")
 	case errors.Is(err, registry.ErrFull):
 		writeError(w, http.StatusInsufficientStorage, "quota")
 	case errors.Is(err, channel.ErrInvalid):
