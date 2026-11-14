@@ -614,7 +614,7 @@ func TestServeAnswersHelloAndStops(t *testing.T) {
 	if strings.Count(srv.out.String(), "\n") != 1 || strings.Contains(srv.out.String(), "{") {
 		t.Fatalf("stdout %q", srv.out.String())
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	resp, err := client.Get("http://" + srv.addr + "/v1/hello")
 	if err != nil {
 		t.Fatal(err)
@@ -876,7 +876,7 @@ func TestJoinLinkRegistersAgainstTheServer(t *testing.T) {
 		t.Fatalf("issue %d %v\nstdout %q\nstderr %q", code, err, stdout, stderr)
 	}
 	frag := strings.TrimPrefix(strings.TrimSpace(stdout), base+"/join#")
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	status, body := postRegister(t, client, base, frag, inst(0x11), "seat a")
 	token := hex.EncodeToString(rep(0x44, 32))
 	want := `{"token":"` + token + `","server":{"id":"` + hex.EncodeToString(rep(0x01, 16)) + `","name":"relay a"}}`
@@ -906,7 +906,7 @@ func TestServeOutputKeepsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	join := strings.TrimSpace(stdout)
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	hello, err := client.Get("http://" + srv.addr + "/v1/hello")
 	if err != nil {
 		t.Fatal(err)
@@ -1020,6 +1020,18 @@ func codeIDAt(t *testing.T, dir string, index int) string {
 		t.Fatalf("index %d of %d", index, len(rows))
 	}
 	return rows[index].ID
+}
+
+// httpClient disables keep-alives. Under scheduling delay a keep-alive
+// client dials a spare connection before the previous one is idle, and the
+// server accepts that spare with no request. Shutdown leaves a young
+// StateNew connection open for five seconds, the same budget finish allows,
+// so the test reports that the server did not stop.
+func httpClient() *http.Client {
+	return &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 }
 
 type running struct {

@@ -872,7 +872,7 @@ func TestStartupReconcileRunsBeforeServe(t *testing.T) {
 	}
 	entropy = bytes.NewReader(bytes.Repeat([]byte{0x11}, 256))
 	srv := startServer(t, dir, "127.0.0.1:0", "-name", "relay a")
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	status, resp := getAuth(t, client, "http://"+srv.addr+"/v1/channels", ownerTok)
 	if status != http.StatusUnauthorized || resp != `{"error":"unauthorized"}` {
 		t.Fatalf("old token %d %s", status, resp)
@@ -915,7 +915,7 @@ func TestServePrintsNoChannelContent(t *testing.T) {
 	dir := t.TempDir()
 	entropy = bytes.NewReader(bytes.Repeat([]byte{0x31}, 4096))
 	srv := startServer(t, dir, "127.0.0.1:0", "-name", "relay a")
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	base := "http://" + srv.addr
 	entropy = bytes.NewReader(bytes.Repeat([]byte{0x44}, 64))
 	out, errOut, code, err := runWithin([]string{"-state-dir", dir, "issue"})
@@ -1112,7 +1112,7 @@ func TestServeStartsWithADamagedChannel(t *testing.T) {
 	}
 	entropy = bytes.NewReader(bytes.Repeat([]byte{0x11}, 64))
 	srv := startServer(t, dir, "127.0.0.1:0", "-name", "relay a")
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := httpClient()
 	base := "http://" + srv.addr
 	status, resp := getAuth(t, client, base+"/v1/hello", "")
 	if status != http.StatusOK || !strings.Contains(resp, `"protocol":1`) {
