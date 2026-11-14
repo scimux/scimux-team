@@ -567,6 +567,61 @@ func TestRevocationRemovesChannelsAndMemberships(t *testing.T) {
 	}
 }
 
+func TestRevokedSeatLosesADirectoryWithoutChannelJSON(t *testing.T) {
+	p := newParty(t, channel.Options{})
+	ownerID := inst(0x11)
+	p.seat(t, 0x11, "seat a")
+	other := p.seat(t, 0x22, "seat b")
+	data := []byte("old-blob")
+	id := blobID(data)
+	chatDir := filepath.Join(p.dir, "channels", ownerID, "main")
+	if err := os.MkdirAll(filepath.Join(chatDir, "blobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "blobs", id), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "mirror.jsonl"), []byte("old-mirror\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "comments.jsonl"), []byte("old-comments\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "stray.txt"), []byte("old-stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := openRegistry(t, p.dir, registry.Options{Now: fixedNow, Entropy: &seqReader{n: 80}})
+	if _, err := second.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Revoke(ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if got := callOK(t, p.h, http.MethodGet, "/v1/channels", other, ""); got != `{"channels":[]}` {
+		t.Fatalf("after revoke %s", got)
+	}
+	if _, err := os.Stat(chatDir); !os.IsNotExist(err) {
+		t.Fatalf("leftover remains %v", err)
+	}
+	code, _, err := p.reg.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, body := call(p.h, http.MethodPost, "/v1/register", "", `{"join_code":"`+code+`","installation_id":"`+ownerID+`","name":"seat a2"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("register %d %s", status, body)
+	}
+	var created registerResp
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	p.create(t, created.Token, ownerID, "main", "title-main")
+	status, _, body = call(p.h, http.MethodGet, "/v1/channels/"+ownerID+"/main/blobs/"+id, created.Token, "")
+	if status != http.StatusNotFound || string(body) != `{"error":"not_found"}` || bytes.Contains(body, data) {
+		t.Fatalf("old blob %d %s", status, body)
+	}
+}
+
 func TestReregisteredSeatInheritsNothing(t *testing.T) {
 	p := newParty(t, channel.Options{})
 	ownerID, otherID := inst(0x11), inst(0x22)

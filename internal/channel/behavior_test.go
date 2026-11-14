@@ -1211,3 +1211,148 @@ func TestMetaReadsOnlyChannelJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPutStartsCleanOverALeftoverDirectory(t *testing.T) {
+	dir := t.TempDir()
+	owner, other := id(0x11), id(0x22)
+	old := []byte("blob-old-value")
+	chatDir := plantLeftover(t, dir, owner, "chat", old)
+	otherDir := plantLeftover(t, dir, other, "chat", []byte("other-old-blob"))
+	s := openStore(t, dir, Options{
+		Entropy:            bytes.NewReader(seqBytes(8)),
+		MaxBlobsPerChannel: 1,
+		MaxBlobBytes:       int64(len(old)),
+	})
+	info, created, err := s.Put(owner, "chat", "feat")
+	if err != nil || !created || info.Generation != "0102030405060708" || info.MirrorLast != 0 || info.CommentsLast != 0 {
+		t.Fatalf("put %+v %v %v", info, created, err)
+	}
+	if _, err := s.GetBlob(owner, "chat", sumID(old)); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if names(t, chatDir) != "channel.json,comments.jsonl,mirror.jsonl" {
+		t.Fatalf("names %s", names(t, chatDir))
+	}
+	for _, kind := range []Log{Mirror, Comments} {
+		entries, last, _, err := s.Read(owner, "chat", kind, 0)
+		if err != nil || last != 0 || len(entries) != 0 {
+			t.Fatalf("log %v %+v %d %v", kind, entries, last, err)
+		}
+	}
+	fresh := []byte("blob-new-value")
+	if created, err := s.PutBlob(owner, "chat", sumID(fresh), fresh); err != nil || !created {
+		t.Fatalf("quota counted the leftover %v %v", created, err)
+	}
+	again := []byte("blob-two-value")
+	if _, err := s.PutBlob(owner, "chat", sumID(again), again); !errors.Is(err, ErrQuota) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(otherDir, blobsName, sumID([]byte("other-old-blob")))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPutFailsWhenALeftoverCannotBeRemoved(t *testing.T) {
+	dir := t.TempDir()
+	owner := id(0x11)
+	old := []byte("blob-old-value")
+	chatDir := plantLeftover(t, dir, owner, "chat", old)
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	saveSeams(t)
+	removeAll = func(path string) error {
+		if path == chatDir {
+			return errors.New("remove blocked")
+		}
+		return os.RemoveAll(path)
+	}
+	if _, _, err := s.Put(owner, "chat", "feat"); err == nil || !strings.Contains(err.Error(), "remove blocked") {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(owner, "chat"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(chatDir, metaName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("put created a channel")
+	}
+	if _, err := os.Stat(filepath.Join(chatDir, blobsName, sumID(old))); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := s.List(owner)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("list %+v %v", listed, err)
+	}
+}
+
+func TestReconcileRemovesDirectoriesWithoutChannelJSON(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{Entropy: bytes.NewReader(seqBytes(8))})
+	active, inactive := id(0x11), id(0x22)
+	if _, created, err := s.Put(active, "kept", "feat"); err != nil || !created {
+		t.Fatal(err, created)
+	}
+	s.Close()
+	old := []byte("blob-old-value")
+	activeDir := plantLeftover(t, dir, active, "old", old)
+	inactiveDir := plantLeftover(t, dir, inactive, "old", old)
+	stuckDir := plantLeftover(t, dir, active, "stuck", old)
+	s = openStore(t, dir, Options{})
+	saveSeams(t)
+	removeAll = func(path string) error {
+		if path == stuckDir {
+			return errors.New("remove blocked")
+		}
+		return os.RemoveAll(path)
+	}
+	err := s.Reconcile(func(id string) bool { return id == active })
+	if err == nil || !strings.Contains(err.Error(), "remove blocked") {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(activeDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("active owner's leftover remains")
+	}
+	if _, statErr := os.Stat(inactiveDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("inactive owner's leftover remains")
+	}
+	if _, statErr := os.Stat(filepath.Join(stuckDir, blobsName, sumID(old))); statErr != nil {
+		t.Fatal(statErr)
+	}
+	info, err := s.Get(active, "kept")
+	if err != nil || info.Title != "feat" {
+		t.Fatalf("kept %+v %v", info, err)
+	}
+	if _, err := s.Get(active, "old"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	removeAll = os.RemoveAll
+	if err := s.Reconcile(func(id string) bool { return id == active }); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(stuckDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("failed removal was forgotten")
+	}
+	info, err = s.Get(active, "kept")
+	if err != nil || info.Title != "feat" {
+		t.Fatalf("kept after retry %+v %v", info, err)
+	}
+}
+
+func plantLeftover(t *testing.T, dir, owner, chat string, blob []byte) string {
+	t.Helper()
+	chatDir := chatPath(dir, owner, chat)
+	if err := os.MkdirAll(filepath.Join(chatDir, blobsName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, blobsName, sumID(blob)), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, mirrorName), []byte("old-mirror\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, commentsName), []byte("old-comments\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "stray.txt"), []byte("old-stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return chatDir
+}
