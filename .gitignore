@@ -22,5 +22,4 @@ attic/
 .agents
 .codex
 .claude
-
 internal/team/testdata/real-*
