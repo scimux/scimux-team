@@ -28,6 +28,63 @@ type replayRecord struct {
 	Error  string          `json:"error"`
 }
 
+type replayOperator struct {
+	Before int    `json:"before_n"`
+	Cmd    string `json:"cmd"`
+	Count  int    `json:"count"`
+	Seat   string `json:"seat"`
+}
+
+func replayOperators(manifest []byte) ([]replayOperator, error) {
+	var data struct {
+		Operator []replayOperator `json:"operator"`
+	}
+	if err := json.Unmarshal(manifest, &data); err != nil {
+		return nil, fmt.Errorf("invalid manifest")
+	}
+	if len(data.Operator) == 0 {
+		return nil, fmt.Errorf("manifest operator list missing")
+	}
+	for _, op := range data.Operator {
+		switch op.Cmd {
+		case "issue":
+			if op.Count <= 0 {
+				return nil, fmt.Errorf("invalid issue count")
+			}
+		case "revoke":
+			if op.Seat == "" {
+				return nil, fmt.Errorf("missing revoke seat")
+			}
+		default:
+			return nil, fmt.Errorf("unknown operator command")
+		}
+		if op.Before <= 0 {
+			return nil, fmt.Errorf("invalid operator position")
+		}
+	}
+	sort.SliceStable(data.Operator, func(i, j int) bool { return data.Operator[i].Before < data.Operator[j].Before })
+	return data.Operator, nil
+}
+
+func TestReplayOperators(t *testing.T) {
+	for _, tc := range []struct{ data, problem string }{
+		{`{}`, "manifest operator list missing"},
+		{`{"operator":[{"before_n":1,"cmd":"other"}]}`, "unknown operator command"},
+		{`{"operator":[{"before_n":1,"cmd":"issue","count":0}]}`, "invalid issue count"},
+		{`{"operator":[{"before_n":1,"cmd":"revoke"}]}`, "missing revoke seat"},
+		{`{"operator":[{"before_n":0,"cmd":"issue","count":1}]}`, "invalid operator position"},
+		{`{`, "invalid manifest"},
+	} {
+		if _, err := replayOperators([]byte(tc.data)); err == nil || err.Error() != tc.problem {
+			t.Fatalf("manifest validation: want %s", tc.problem)
+		}
+	}
+	ops, err := replayOperators([]byte(`{"operator":[{"before_n":9,"cmd":"revoke","seat":"token-1"},{"before_n":3,"cmd":"issue","count":1}]}`))
+	if err != nil || len(ops) != 2 || ops[0].Cmd != "issue" || ops[1].Cmd != "revoke" {
+		t.Fatal("manifest operator order")
+	}
+}
+
 // replayExceptions names any comparisons that depart from the plan. Times are
 // handled by the plan's format-and-order rule, not an exception.
 var replayExceptions = []string{
@@ -224,8 +281,12 @@ func TestRealTeamE2EReplay(t *testing.T) {
 	if os.IsNotExist(err) {
 		t.Skip("local team acceptance manifest absent")
 	}
-	if err != nil || !json.Valid(manifest) {
+	if err != nil {
 		t.Fatal("cannot read local manifest")
+	}
+	operators, err := replayOperators(manifest)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var records []replayRecord
 	scanner := bufio.NewScanner(wire)
@@ -254,25 +315,32 @@ func TestRealTeamE2EReplay(t *testing.T) {
 	ids := map[string]string{}
 	recordedTimes := make(map[string]map[float64]time.Time)
 	liveTimes := make(map[string]map[float64]time.Time)
-	issued, revoked, registrations, probed := false, false, 0, false
+	operatorIndex, codeCount, registrations, probed := 0, 0, 0, false
 	for _, rec := range records {
-		if rec.Status == 0 && rec.Error != "" {
-			continue
-		}
-		if rec.N >= 5 && !issued {
-			for i := 1; i <= 3; i++ {
-				code, _, err := reg.Issue()
-				if err != nil || !mapping.add(fmt.Sprintf("joincode-%d", i), code) {
-					t.Fatal("issue failed")
+		for operatorIndex < len(operators) && operators[operatorIndex].Before <= rec.N {
+			op := operators[operatorIndex]
+			switch op.Cmd {
+			case "issue":
+				for i := 0; i < op.Count; i++ {
+					codeCount++
+					code, _, err := reg.Issue()
+					if err != nil || !mapping.add(fmt.Sprintf("joincode-%d", codeCount), code) {
+						t.Fatal("issue failed")
+					}
+				}
+			case "revoke":
+				id, ok := ids[op.Seat]
+				if !ok {
+					t.Fatal("revoke seat has not registered")
+				}
+				if _, err := reg.RevokeSeat(id); err != nil {
+					t.Fatal("revoke failed")
 				}
 			}
-			issued = true
+			operatorIndex++
 		}
-		if rec.N >= 386 && !revoked {
-			if _, err := reg.RevokeSeat(ids["token-3"]); err != nil {
-				t.Fatal("revoke failed")
-			}
-			revoked = true
+		if rec.Status == 0 && rec.Error != "" {
+			continue
 		}
 		var request any
 		if len(rec.Req) != 0 && string(rec.Req) != "null" {
@@ -363,7 +431,7 @@ func TestRealTeamE2EReplay(t *testing.T) {
 			probed = true
 		}
 	}
-	if !issued || !revoked || registrations != 3 || !probed {
+	if operatorIndex != len(operators) || !probed {
 		t.Fatal("recording did not exercise required operations")
 	}
 }
