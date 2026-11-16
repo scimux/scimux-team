@@ -89,6 +89,7 @@ func TestReplayOperators(t *testing.T) {
 // handled by the plan's format-and-order rule, not an exception.
 var replayExceptions = []string{
 	"Roster and member order: anonymised IDs do not preserve the live ID sort order.",
+	"Channel DELETE receives its last observed generation because the recording predates conditional deletion.",
 }
 
 type replayMap struct{ forward, reverse map[string]string }
@@ -313,6 +314,7 @@ func TestRealTeamE2EReplay(t *testing.T) {
 	h.channels = store
 	mapping := &replayMap{forward: map[string]string{}, reverse: map[string]string{}}
 	ids := map[string]string{}
+	generations := map[string]string{}
 	recordedTimes := make(map[string]map[float64]time.Time)
 	liveTimes := make(map[string]map[float64]time.Time)
 	operatorIndex, codeCount, registrations, probed := 0, 0, 0, false
@@ -361,6 +363,13 @@ func TestRealTeamE2EReplay(t *testing.T) {
 		for recorded, live := range mapping.forward {
 			path = strings.ReplaceAll(path, recorded, live)
 		}
+		if rec.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/channels/") && len(strings.Split(path, "/")) == 5 && !strings.Contains(path, "?") {
+			gen, ok := generations[path]
+			if !ok {
+				t.Fatalf("record %d channel generation not seen", rec.N)
+			}
+			path += "?generation=" + gen
+		}
 		token := rec.Auth
 		if v, ok := mapping.forward[token]; ok {
 			token = v
@@ -387,6 +396,25 @@ func TestRealTeamE2EReplay(t *testing.T) {
 		if len(response) > 0 {
 			if json.Unmarshal(response, &actual) != nil {
 				fail("response body")
+			}
+		}
+		if row, ok := actual.(map[string]any); ok {
+			if rec.Method == http.MethodPut && strings.HasPrefix(path, "/v1/channels/") && len(strings.Split(path, "/")) == 5 {
+				if gen, ok := row["generation"].(string); ok {
+					generations[path] = gen
+				}
+			}
+			if rows, ok := row["channels"].([]any); ok {
+				for _, item := range rows {
+					if ch, ok := item.(map[string]any); ok {
+						owner, a := ch["owner"].(string)
+						chat, b := ch["chat"].(string)
+						gen, c := ch["generation"].(string)
+						if a && b && c {
+							generations["/v1/channels/"+owner+"/"+chat] = gen
+						}
+					}
+				}
 			}
 		}
 		if diff := replayCompare(expected, actual, "$", mapping); diff != "" {

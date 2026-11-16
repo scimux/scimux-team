@@ -95,7 +95,7 @@ func TestChannelAccess(t *testing.T) {
 		{http.MethodDelete, gone, read, "", http.StatusForbidden, "forbidden"},
 		{http.MethodDelete, gone, stranger, "", http.StatusNotFound, "not_found"},
 		{http.MethodDelete, gone, "", "", http.StatusUnauthorized, "unauthorized"},
-		{http.MethodDelete, gone, owner, "", http.StatusNoContent, ""},
+		{http.MethodDelete, gone + "?generation=" + gen2, owner, "", http.StatusNoContent, ""},
 	}
 	for _, tc := range cases {
 		status, hdr, body := call(p.h, tc.method, tc.path, tc.token, tc.body)
@@ -590,7 +590,7 @@ func TestAppendAfterRecreateRejectsTheOldGeneration(t *testing.T) {
 	member := p.seat(t, 0x22, "seat b")
 	p.create(t, owner, ownerID, "main", "title-old")
 	p.members(t, owner, ownerID, "main", "", memberID)
-	status, _, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main", owner, "")
+	status, _, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main?generation="+gen1, owner, "")
 	if status != http.StatusNoContent {
 		t.Fatalf("delete %d %s", status, body)
 	}
@@ -716,7 +716,7 @@ func TestGenerationRestartsAfterDelete(t *testing.T) {
 		t.Fatalf("first %s", first)
 	}
 	callOK(t, p.h, http.MethodPost, "/v1/channels/"+ownerID+"/main/mirror", owner, `{"generation":"`+gen1+`","entries":[{"key":"k","body":1}]}`)
-	status, hdr, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main", owner, "")
+	status, hdr, body := call(p.h, http.MethodDelete, "/v1/channels/"+ownerID+"/main?generation="+gen1, owner, "")
 	if status != http.StatusNoContent || len(body) != 0 || hdr.Get("Content-Type") != "application/json" {
 		t.Fatalf("delete %d %s", status, body)
 	}
@@ -1962,5 +1962,59 @@ func expectInternal(t *testing.T, h http.Handler, method, path, token, body stri
 	status, _, got := call(h, method, path, token, body)
 	if status != http.StatusInternalServerError || string(got) != `{"error":"internal"}` {
 		t.Fatalf("%s %d %s", method, status, got)
+	}
+}
+
+func TestDeleteChannelGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		want        int
+		code        string
+	}{
+		{"missing", "", http.StatusBadRequest, "bad_request"},
+		{"empty", "?generation=", http.StatusBadRequest, "bad_request"},
+		{"invalid", "?generation=ABC", http.StatusBadRequest, "bad_request"},
+		{"duplicate", "?generation=" + gen1 + "&generation=" + gen1, http.StatusBadRequest, "bad_request"},
+		{"stale", "?generation=" + gen2, http.StatusConflict, "stale_generation"},
+		{"current", "?generation=" + gen1, http.StatusNoContent, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newParty(t, channel.Options{})
+			id := inst(0x11)
+			owner := p.seat(t, 0x11, "Owner")
+			member := p.seat(t, 0x22, "Member")
+			stranger := p.seat(t, 0x33, "Stranger")
+			p.create(t, owner, id, "room", "Title")
+			p.members(t, owner, id, "room", inst(0x22), "")
+			path := "/v1/channels/" + id + "/room"
+			for _, log := range []string{"mirror", "comments"} {
+				callOK(t, p.h, http.MethodPost, path+"/"+log, owner, `{"generation":"`+gen1+`","entries":[{"key":"k","body":1}]}`)
+			}
+			blob := strings.Repeat("2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881", 1)
+			callOK(t, p.h, http.MethodPut, path+"/blobs/"+blob, owner, "x")
+			for _, q := range []string{"", "?generation=bad", "?generation=" + gen2, "?generation=" + gen1} {
+				sameNotFound(t, p.h, http.MethodDelete, path+q, "/v1/channels/"+id+"/missing"+q, stranger, "")
+				status, _, _ := call(p.h, http.MethodDelete, path+q, member, "")
+				if status != http.StatusForbidden {
+					t.Fatalf("member: %d", status)
+				}
+			}
+			status, _, body := call(p.h, http.MethodDelete, path+tc.query, owner, "")
+			if status != tc.want || (tc.code != "" && string(body) != `{"error":"`+tc.code+`"}`) {
+				t.Fatalf("delete: %d %s", status, body)
+			}
+			if tc.want != http.StatusNoContent {
+				for _, log := range []string{"mirror", "comments"} {
+					got := callOK(t, p.h, http.MethodGet, path+"/"+log, owner, "")
+					if !strings.Contains(got, `"key":"k"`) {
+						t.Fatal("log lost")
+					}
+				}
+				status, _, body = call(p.h, http.MethodGet, path+"/blobs/"+blob, owner, "")
+				if status != http.StatusOK || string(body) != "x" {
+					t.Fatal("blob lost")
+				}
+			}
+		})
 	}
 }

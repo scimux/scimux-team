@@ -125,7 +125,29 @@ func TestScenarioTeamWalk(t *testing.T) {
 		t.Fatal("roster rename")
 	}
 	request(http.MethodDelete, path+"/membership", tokens[2], "", http.StatusNoContent)
-	request(http.MethodDelete, path, tokens[0], "", http.StatusNoContent)
+	for _, check := range []struct {
+		query, code string
+		status      int
+	}{
+		{"?generation=" + stale, "stale_generation", http.StatusConflict},
+		{"", "bad_request", http.StatusBadRequest},
+		{"?generation=bad", "bad_request", http.StatusBadRequest},
+	} {
+		t.Run(check.code+check.query, func(t *testing.T) {
+			probe := path + "-probe"
+			request(http.MethodPut, probe, tokens[0], `{"title":"Probe"}`, http.StatusCreated)
+			status, _, raw := call(p.h, http.MethodDelete, probe+check.query, tokens[0], "")
+			if status != check.status || string(raw) != `{"error":"`+check.code+`"}` {
+				t.Errorf("delete: %d %s", status, raw)
+			}
+			// The next probe starts with a fresh channel on either server version.
+			if info, err := p.st.Meta(ids[0], "study-probe"); err == nil {
+				call(p.h, http.MethodDelete, probe+"?generation="+info.Generation, tokens[0], "")
+			}
+		})
+	}
+
+	request(http.MethodDelete, path+"?generation="+gen, tokens[0], "", http.StatusNoContent)
 	if out := request(http.MethodGet, path+"/mirror", tokens[1], "", http.StatusNotFound); out["error"] != "not_found" {
 		t.Fatal("deleted channel")
 	}
