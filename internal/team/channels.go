@@ -130,8 +130,16 @@ func (s *server) putChannel(w http.ResponseWriter, r *http.Request) {
 func (s *server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	owner, chat := r.PathValue("owner"), r.PathValue("chat")
 	err := s.withRegistry(func() error {
-		if _, err := s.gate(r, owner, chat, needOwner, false); err != nil {
+		g, err := s.gate(r, owner, chat, needOwner, false)
+		if err != nil {
 			return err
+		}
+		values := r.URL.Query()["generation"]
+		if len(values) != 1 || !validGeneration(values[0]) {
+			return channel.ErrInvalid
+		}
+		if values[0] != g.info.Generation {
+			return errStaleGeneration
 		}
 		return s.channels.Delete(owner, chat)
 	})

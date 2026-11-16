@@ -43,7 +43,7 @@ An error response is `{"error":"<code>"}` with one of these codes:
 | 403 | `forbidden` | The caller can see the channel but may not do this |
 | 404 | `not_found` | No such route, or no channel the caller can see |
 | 409 | `already_registered` | The installation ID is registered |
-| 409 | `stale_generation` | An append names another generation than the channel has |
+| 409 | `stale_generation` | An append or deletion names another generation than the channel has |
 | 413 | `too_large` | Body over 16 MiB, an entry body over 4 MiB, or a blob over 4 MiB |
 | 422 | `unknown_member` | A member list names a seat that is not registered |
 | 500 | `internal` | The server could not read or write its state |
@@ -193,9 +193,16 @@ with the channel object when created and `200` when it already existed.
 
 ### `DELETE /v1/channels/{owner}/{chat}`
 
-Owner only. Removes the channel and both logs from the server. Answers
-`204`. Creating the same channel again gives it a new generation and empty
-logs.
+Owner only. Requires `generation` as a query value of 16 lowercase hexadecimal
+digits. A missing, malformed or repeated value is `bad_request`. A generation
+that differs from the current channel generation answers `stale_generation`
+and deletes nothing. Authentication, visibility and permission checks precede
+the generation check. The comparison and deletion run under the same lock
+as channel creation and appends.
+
+A matching generation removes the channel, both logs and its blobs and
+answers `204`. Creating the same channel again gives it a new generation and
+empty logs.
 
 ### `PUT /v1/channels/{owner}/{chat}/members`
 
