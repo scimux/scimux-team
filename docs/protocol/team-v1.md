@@ -314,6 +314,18 @@ entry that refers to the blob carries those.
 | --- | --- | --- |
 | Blob | owner, `read`, `write` | owner, `write` |
 
+The successful hello response advertises `Scimux-Blob-Generation: 1` as an
+HTTP header. The hello JSON shape is unchanged; clients that require fenced
+blob operations must verify the server identity and this capability before
+issuing a blob request. The header is not an authentication credential.
+
+Blob PUT and GET accept an optional `generation` query parameter. When
+present it must occur once and be 16 lowercase hexadecimal characters. Access
+is checked first; the generation must match the current channel. PUT checks
+again after reading the body under the same serialization as channel changes.
+A mismatch returns `stale_generation`. Calls without the parameter retain
+legacy behavior and do not provide this fence.
+
 ### `PUT /v1/channels/{owner}/{chat}/blobs/{id}`
 
 The body is the raw bytes, 1 byte to 4 MiB. `id` is the SHA-256 of the
@@ -336,4 +348,6 @@ Answers `200` with the bytes. A blob that is not stored is `not_found`.
 A blob cannot be changed or removed on its own, and blobs cannot be
 listed. Removing the channel removes its blobs. A blob stays when the seat
 that uploaded it leaves the channel, leaves the server or is revoked,
-unless that seat owned the channel.
+unless that seat owned the channel. An unreferenced blob, including one left
+after an interrupted publication, remains within the channel limits until
+channel removal; the relay does not interpret entries as file references.

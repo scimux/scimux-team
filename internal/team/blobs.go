@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/scimux/scimux-team/internal/channel"
@@ -20,7 +21,14 @@ type blobResp struct {
 
 func (s *server) putBlob(w http.ResponseWriter, r *http.Request) {
 	owner, chat, id := r.PathValue("owner"), r.PathValue("chat"), r.PathValue("id")
-	if !s.allow(w, r, owner, chat, needWrite, false) {
+	if err := s.withRegistry(func() error {
+		g, err := s.gate(r, owner, chat, needWrite, false)
+		if err != nil {
+			return err
+		}
+		return blobGeneration(r, g.info.Generation)
+	}); err != nil {
+		s.finish(w, err, 0, nil)
 		return
 	}
 	if !validBlobID(id) {
@@ -34,7 +42,11 @@ func (s *server) putBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	var created bool
 	err = s.withRegistry(func() error {
-		if _, err := s.gate(r, owner, chat, needWrite, false); err != nil {
+		g, err := s.gate(r, owner, chat, needWrite, false)
+		if err != nil {
+			return err
+		}
+		if err := blobGeneration(r, g.info.Generation); err != nil {
 			return err
 		}
 		var putErr error
@@ -56,7 +68,11 @@ func (s *server) getBlob(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			return errNotFound
 		}
-		if _, err := s.gate(r, owner, chat, needRead, false); err != nil {
+		g, err := s.gate(r, owner, chat, needRead, false)
+		if err != nil {
+			return err
+		}
+		if err := blobGeneration(r, g.info.Generation); err != nil {
 			return err
 		}
 		if !validBlobID(id) {
@@ -111,4 +127,24 @@ func validBlobID(id string) bool {
 		}
 	}
 	return true
+}
+
+// blobGeneration accepts legacy unguarded calls and fences guarded calls.
+// The caller holds the registry serialization lock and has already checked access.
+func blobGeneration(r *http.Request, current string) error {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return channel.ErrInvalid
+	}
+	values, present := query["generation"]
+	if !present {
+		return nil
+	}
+	if len(values) != 1 || !validGeneration(values[0]) {
+		return channel.ErrInvalid
+	}
+	if values[0] != current {
+		return errStaleGeneration
+	}
+	return nil
 }

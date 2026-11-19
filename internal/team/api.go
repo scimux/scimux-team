@@ -229,6 +229,9 @@ func (s *server) hello(w http.ResponseWriter, r *http.Request) {
 		srv = s.reg.Server()
 		return nil
 	})
+	if err == nil {
+		w.Header().Set("Scimux-Blob-Generation", "1")
+	}
 	s.finish(w, err, http.StatusOK, helloResp{
 		Protocol: 1,
 		Server:   serverJSON{ID: srv.ID, Name: srv.Name},
