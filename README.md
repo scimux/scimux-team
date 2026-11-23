@@ -104,6 +104,7 @@ may serve a state directory.
 ```sh
 go build -o scimux-team ./cmd/scimux-team
 go test -race ./...
+gofmt -l .                     # prints nothing when formatted
 go vet ./...
 go run ./tools/covercheck      # statement and branch coverage gate
 ```
