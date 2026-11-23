@@ -14,7 +14,7 @@ jobs:
       contents: read
     runs-on: [self-hosted, linux, x64, go-builder]
     container:
-      image: golang:1.27.1-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b
+      image: golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280
     env:
       REF_NAME: ${{ github.ref_name }}
     steps:
@@ -112,7 +112,7 @@ jobs:
       contents: write
     runs-on: [self-hosted, linux, x64, release-publisher]
     container:
-      image: golang:1.27.1-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b
+      image: golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280
     steps:
       - name: Add publishing tools
         run: apk add --no-cache bash curl jq coreutils nodejs
