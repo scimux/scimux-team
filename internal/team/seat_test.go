@@ -424,6 +424,9 @@ func TestMembershipAccess(t *testing.T) {
 }
 
 func TestMembershipWriteFailureStaysInternal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write permissions")
+	}
 	p := newParty(t, channel.Options{})
 	ownerID, writeID := inst(0x11), inst(0x22)
 	owner := p.seat(t, 0x11, "seat a")
