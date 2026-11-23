@@ -107,6 +107,8 @@ go test -race ./...
 gofmt -l .                     # prints nothing when formatted
 go vet ./...
 go run ./tools/covercheck      # statement and branch coverage gate
+go test ./internal/invite -run '^$' -fuzz=FuzzParse -fuzztime=20s
+go test ./internal/journal -run '^$' -fuzz=FuzzJournal -fuzztime=20s
 ```
 
 ## Licence
